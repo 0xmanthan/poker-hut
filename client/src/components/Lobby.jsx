@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { api } from '../lib.js';
+import { api, session } from '../lib.js';
 import Avatar from './Avatar.jsx';
 
 const CURRENCIES = ['₹', '$', '€', '£'];
 
-export default function Lobby({ user, onOpen, onSignOut }) {
+export default function Lobby({ user, onOpen, onRenamed }) {
   const [form, setForm] = useState({
     name: `${user.name}'s table`,
     smallBlind: 5,
@@ -19,6 +19,20 @@ export default function Lobby({ user, onOpen, onSignOut }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [history, setHistory] = useState(null);
+  const [renaming, setRenaming] = useState(false);
+  const [newName, setNewName] = useState(user.name);
+
+  const rename = async (e) => {
+    e.preventDefault();
+    try {
+      const { token, user: next } = await api('/api/auth/rename', { name: newName });
+      session.save(token, next);
+      onRenamed(next);
+      setRenaming(false);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
   useEffect(() => {
     api('/api/me/history').then(setHistory).catch(() => setHistory({ tables: [], standings: [] }));
@@ -55,11 +69,19 @@ export default function Lobby({ user, onOpen, onSignOut }) {
     <main className="lobby">
       <header className="lobby-top">
         <span className="wordmark small">Poker Hut</span>
-        <div className="who">
-          <Avatar name={user.name} src={user.avatar} size={32} />
-          <span>{user.name}</span>
-          <button className="btn ghost sm" onClick={onSignOut}>Sign out</button>
-        </div>
+        {renaming ? (
+          <form className="who" onSubmit={rename}>
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} maxLength={24} aria-label="Your name" autoFocus />
+            <button className="btn primary sm" disabled={!newName.trim()}>Save</button>
+            <button type="button" className="btn ghost sm" onClick={() => { setRenaming(false); setNewName(user.name); }}>Cancel</button>
+          </form>
+        ) : (
+          <div className="who">
+            <Avatar name={user.name} src={user.avatar} size={32} />
+            <span>{user.name}</span>
+            <button className="btn ghost sm" onClick={() => setRenaming(true)}>Change name</button>
+          </div>
+        )}
       </header>
 
       <div className="lobby-grid">

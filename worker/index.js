@@ -1,16 +1,15 @@
-// Cloudflare Worker: Google sign-in, table creation, and one Durable Object per table.
+// Cloudflare Worker: name-only sessions, table creation, and one Durable Object per table.
 // Each table lives in its own Durable Object, so its state survives restarts and
 // every player at that table talks to the same single instance.
 
 import { DurableObject } from 'cloudflare:workers';
-import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
+import { SignJWT, jwtVerify } from 'jose';
 import { Table, GameError } from '../engine/table.js';
 import { saveUser, saveTable, saveMembership, saveResults, myTables, standings } from './db.js';
 
-const GOOGLE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
-// The frontend may live on another origin (Vercel). Auth is a bearer token, not a
+// The frontend may live on another origin (Vercel). Sessions are a bearer token, not a
 // cookie, so allowing any origin to call the API is safe.
 const CORS = {
   'access-control-allow-origin': '*',
@@ -31,7 +30,7 @@ async function issueSession(env, user) {
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
     .setIssuedAt()
-    .setExpirationTime('30d')
+    .setExpirationTime('365d')
     .sign(secretKey(env));
 }
 
@@ -62,33 +61,25 @@ export default {
     if (req.method === 'OPTIONS' && path.startsWith('/api/')) return new Response(null, { status: 204, headers: CORS });
 
     try {
-      if (path === '/api/config') {
-        return json({ googleClientId: env.GOOGLE_CLIENT_ID || null, allowGuest: env.ALLOW_GUEST === '1' });
-      }
-
-      if (path === '/api/auth/google' && req.method === 'POST') {
-        if (!env.GOOGLE_CLIENT_ID) return error('Google sign-in is not configured on this server.', 500);
-        const { credential } = await req.json();
-        let payload;
-        try {
-          ({ payload } = await jwtVerify(credential, GOOGLE_JWKS, {
-            issuer: ['https://accounts.google.com', 'accounts.google.com'],
-            audience: env.GOOGLE_CLIENT_ID,
-          }));
-        } catch {
-          return error('Google sign-in could not be verified. Try again.', 401);
-        }
-        const user = { id: `g:${payload.sub}`, name: String(payload.given_name || payload.name || 'Player').slice(0, 24), avatar: payload.picture ?? null };
-        await saveUser(env.DB, user);
-        return json({ token: await issueSession(env, user), user });
-      }
-
+      // No accounts. A name gets you a signed token with a random player id; the browser
+      // keeps it, so a reload brings you back to the same seat and chips.
       if (path === '/api/auth/guest' && req.method === 'POST') {
-        if (env.ALLOW_GUEST !== '1') return error('Guest sign-in is turned off. Use Google.', 403);
         const { name } = await req.json();
         const clean = String(name ?? '').trim().slice(0, 24);
         if (!clean) return error('Enter a name.');
         const user = { id: `guest:${crypto.randomUUID()}`, name: clean, avatar: null };
+        await saveUser(env.DB, user);
+        return json({ token: await issueSession(env, user), user });
+      }
+
+      // keep the same player id, change the display name
+      if (path === '/api/auth/rename' && req.method === 'POST') {
+        const current = await readSession(env, bearer(req));
+        if (!current) return error('Enter your name first.', 401);
+        const { name } = await req.json();
+        const clean = String(name ?? '').trim().slice(0, 24);
+        if (!clean) return error('Enter a name.');
+        const user = { ...current, name: clean };
         await saveUser(env.DB, user);
         return json({ token: await issueSession(env, user), user });
       }
@@ -100,14 +91,14 @@ export default {
 
       if (path === '/api/me/history') {
         const user = await readSession(env, bearer(req));
-        if (!user) return error('Sign in first.', 401);
+        if (!user) return error('Enter your name first.', 401);
         const [tables, board] = await Promise.all([myTables(env.DB, user.id), standings(env.DB, user.id)]);
         return json({ tables, standings: board });
       }
 
       if (path === '/api/tables' && req.method === 'POST') {
         const user = await readSession(env, bearer(req));
-        if (!user) return error('Sign in first.', 401);
+        if (!user) return error('Enter your name first.', 401);
         const body = await req.json();
         for (let attempt = 0; attempt < 5; attempt++) {
           const code = newCode();
@@ -133,7 +124,7 @@ export default {
       if (ws) {
         if (req.headers.get('upgrade') !== 'websocket') return error('Expected a websocket', 426);
         const user = await readSession(env, url.searchParams.get('token'));
-        if (!user) return error('Sign in first.', 401);
+        if (!user) return error('Enter your name first.', 401);
         const stub = env.TABLES.get(env.TABLES.idFromName(cleanCode(ws[1])));
         const headers = new Headers(req.headers);
         headers.set('x-user', JSON.stringify(user));

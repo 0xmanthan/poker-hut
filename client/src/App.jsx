@@ -27,9 +27,7 @@ export default function App() {
     setCode(next);
   };
 
-  const signOut = () => { session.clear(); setUser(null); };
-
   if (!user) return <Login onSignedIn={setUser} joining={code} />;
   if (code) return <TableScreen key={code} code={code} user={user} onLeave={() => go(null)} />;
-  return <Lobby user={user} onOpen={go} onSignOut={signOut} />;
+  return <Lobby user={user} onOpen={go} onRenamed={setUser} />;
 }
