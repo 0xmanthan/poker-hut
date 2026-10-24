@@ -51,6 +51,13 @@ Free-plan limits (Cloudflare, checked Oct 2026): 100,000 Durable Object requests
 13,000 GB-s of Durable Object time/day (about 28 hours of one table being open), 5 GB storage.
 A friends' game uses a small fraction of that.
 
+## Where data lives
+
+- **Live table** (seats, stacks, bill sheet, shuffle seeds): that table's Durable Object, in its built-in SQLite storage.
+- **D1 database `poker-hut`** (`migrations/`): players, tables each person joined, and every player's final
+  result when a session ends. Powers "Your tables" and "Standings" in the lobby.
+  Apply new migrations with `npm run db:migrate` (remote) or `npm run db:migrate:local`.
+
 ## How the deal stays fair
 
 - Each hand gets a fresh 256-bit seed from the OS cryptographic RNG.
