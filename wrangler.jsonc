@@ -16,7 +16,7 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TableRoom"] }],
   "vars": {
     // Paste your Google OAuth "Web application" client ID here (see README).
-    "GOOGLE_CLIENT_ID": "",
+    "GOOGLE_CLIENT_ID": "964105743090-3802c05vk7usr9lndm99ehf9mv3ufj13.apps.googleusercontent.com",
     // "1" lets people join with just a name. Turn off once Google sign-in works.
     "ALLOW_GUEST": "1"
   }
