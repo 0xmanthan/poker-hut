@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="felt" cx="50%" cy="40%" r="70%">
+      <stop offset="0" stop-color="#2d7a5c"/>
+      <stop offset="0.6" stop-color="#1f5e46"/>
+      <stop offset="1" stop-color="#143f30"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#felt)"/>
+  <rect x="2" y="2" width="60" height="60" rx="12.5" fill="none" stroke="#c9a25a" stroke-opacity="0.55" stroke-width="1.5"/>
+  <!-- card behind -->
+  <g transform="rotate(-16 24 34)">
+    <rect x="10" y="13" width="28" height="39" rx="4" fill="#f7f2e6"/>
+    <rect x="12.5" y="15.5" width="23" height="34" rx="2.5" fill="#6b1f2a"/>
+  </g>
+  <!-- card in front, a heart -->
+  <g transform="rotate(10 38 32)">
+    <rect x="23" y="12" width="29" height="40" rx="4" fill="#f7f2e6" stroke="#143f30" stroke-opacity="0.35" stroke-width="1"/>
+    <path d="M37.5 44.5c-1-1-10-7.4-10-14 0-3.4 2.6-5.8 5.6-5.8 2 0 3.5 1 4.4 2.6.9-1.6 2.4-2.6 4.4-2.6 3 0 5.6 2.4 5.6 5.8 0 6.6-9 13-10 14z" fill="#b3263a"/>
+  </g>
+</svg>
