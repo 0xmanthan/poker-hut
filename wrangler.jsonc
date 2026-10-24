@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "poker-hut",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/ws/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "TABLES", "class_name": "TableRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TableRoom"] }],
+  "vars": {
+    // Paste your Google OAuth "Web application" client ID here (see README).
+    "GOOGLE_CLIENT_ID": "",
+    // "1" lets people join with just a name. Turn off once Google sign-in works.
+    "ALLOW_GUEST": "1"
+  }
+}
