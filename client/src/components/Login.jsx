@@ -46,7 +46,7 @@ export default function Login({ onSignedIn, joining }) {
         },
       });
       if (btnRef.current) {
-        window.google.accounts.id.renderButton(btnRef.current, { theme: 'filled_black', size: 'large', shape: 'pill', text: 'continue_with', width: 280 });
+        window.google.accounts.id.renderButton(btnRef.current, { theme: 'outline', size: 'large', shape: 'pill', text: 'continue_with', width: 280 });
       }
     }).catch((e) => setError(e.message));
   }, [config, onSignedIn]);
