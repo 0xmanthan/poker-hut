@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api } from '../lib.js';
 import Avatar from './Avatar.jsx';
 
@@ -18,6 +18,11 @@ export default function Lobby({ user, onOpen, onSignOut }) {
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [history, setHistory] = useState(null);
+
+  useEffect(() => {
+    api('/api/me/history').then(setHistory).catch(() => setHistory({ tables: [], standings: [] }));
+  }, []);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
 
   const create = async (e) => {
@@ -115,6 +120,58 @@ export default function Lobby({ user, onOpen, onSignOut }) {
         </form>
       </div>
       {error && <p className="error center" role="alert">{error}</p>}
+
+      <div className="lobby-grid records">
+        <section className="panel">
+          <h2>Your tables</h2>
+          {!history && <p className="muted">Loading…</p>}
+          {history && history.tables.length === 0 && <p className="muted">Tables you join or host show up here.</p>}
+          {history && history.tables.length > 0 && (
+            <ul className="my-tables">
+              {history.tables.map((t) => (
+                <li key={t.code}>
+                  <button className="table-row" onClick={() => onOpen(t.code)}>
+                    <span className="tr-main">
+                      <strong>{t.name}</strong>
+                      <span className="muted small">
+                        {new Date(t.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                        {t.is_host ? ', you hosted' : ''}
+                        {t.hands ? `, ${t.hands} hands` : ''}
+                      </span>
+                    </span>
+                    {t.status === 'ended' && t.net_money !== null
+                      ? <span className={`tr-net ${t.net_money > 0 ? 'up' : t.net_money < 0 ? 'down' : ''}`}>{signed(t.net_money, t.currency)}</span>
+                      : <span className={`tr-status ${t.status}`}>{t.status === 'ended' ? 'Ended' : 'Open'}</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section className="panel">
+          <h2>Standings</h2>
+          <p className="muted">Totals from finished sessions you played in.</p>
+          {history && history.standings.length === 0 && <p className="muted">When a host ends a session, everyone's result lands here.</p>}
+          {history && history.standings.length > 0 && (
+            <ol className="standings">
+              {history.standings.map((r) => (
+                <li key={r.user_id + r.currency} className={r.user_id === user.id ? 'mine' : ''}>
+                  <Avatar name={r.name} src={r.avatar} size={28} />
+                  <span className="st-name">{r.user_id === user.id ? 'You' : r.name}</span>
+                  <span className="muted small">{r.sessions} {r.sessions === 1 ? 'session' : 'sessions'}</span>
+                  <span className={`tr-net ${r.net_money > 0 ? 'up' : r.net_money < 0 ? 'down' : ''}`}>{signed(r.net_money, r.currency)}</span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      </div>
     </main>
   );
+}
+
+function signed(v, currency) {
+  const abs = Math.abs(v).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+  return `${v > 0 ? '+' : v < 0 ? '−' : ''}${currency}${abs}`;
 }

@@ -14,6 +14,9 @@
     "bindings": [{ "name": "TABLES", "class_name": "TableRoom" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TableRoom"] }],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "poker-hut", "database_id": "68614425-0237-48f0-9ea8-d845e9972b62", "migrations_dir": "migrations" }
+  ],
   "vars": {
     // Paste your Google OAuth "Web application" client ID here (see README).
     "GOOGLE_CLIENT_ID": "685914454924-c02evnf363g5erva8q30bv87vsu47148.apps.googleusercontent.com",

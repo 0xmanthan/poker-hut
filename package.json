@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "concurrently -k -n worker,web \"wrangler dev --port 8787\" \"vite\"",
     "build": "vite build",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "vite build && wrangler d1 migrations apply poker-hut --remote && wrangler deploy",
     "test": "node --test test/*.test.js",
-    "fairness": "node scripts/fairness.js"
+    "fairness": "node scripts/fairness.js",
+    "db:migrate:local": "wrangler d1 migrations apply poker-hut --local",
+    "db:migrate": "wrangler d1 migrations apply poker-hut --remote"
   },
   "engines": {
     "node": ">=20"

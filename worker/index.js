@@ -5,6 +5,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
 import { Table, GameError } from '../engine/table.js';
+import { saveUser, saveTable, saveMembership, saveResults, myTables, standings } from './db.js';
 
 const GOOGLE_JWKS = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -78,6 +79,7 @@ export default {
           return error('Google sign-in could not be verified. Try again.', 401);
         }
         const user = { id: `g:${payload.sub}`, name: String(payload.given_name || payload.name || 'Player').slice(0, 24), avatar: payload.picture ?? null };
+        await saveUser(env.DB, user);
         return json({ token: await issueSession(env, user), user });
       }
 
@@ -87,12 +89,20 @@ export default {
         const clean = String(name ?? '').trim().slice(0, 24);
         if (!clean) return error('Enter a name.');
         const user = { id: `guest:${crypto.randomUUID()}`, name: clean, avatar: null };
+        await saveUser(env.DB, user);
         return json({ token: await issueSession(env, user), user });
       }
 
       if (path === '/api/me') {
         const user = await readSession(env, bearer(req));
         return user ? json({ user }) : error('Signed out', 401);
+      }
+
+      if (path === '/api/me/history') {
+        const user = await readSession(env, bearer(req));
+        if (!user) return error('Sign in first.', 401);
+        const [tables, board] = await Promise.all([myTables(env.DB, user.id), standings(env.DB, user.id)]);
+        return json({ tables, standings: board });
       }
 
       if (path === '/api/tables' && req.method === 'POST') {
@@ -147,10 +157,12 @@ export class TableRoom extends DurableObject {
     this.chat = [];
     this.broadcastQueued = false;
     this.saveTimer = null;
+    this.members = new Set(); // users already recorded in D1 for this table
+    this.lastStatus = null;
     ctx.blockConcurrencyWhile(async () => {
       const data = await ctx.storage.get('table');
       if (data) {
-        this.table = Table.fromJSON(data, { onChange: () => this.changed() });
+        this.table = Table.fromJSON(data, this.hooks());
         this.table.maybeStartHand();
       }
     });
@@ -162,9 +174,11 @@ export class TableRoom extends DurableObject {
     if (url.pathname === '/init') {
       if (this.table) return error('exists', 409);
       const { code, name, host, settings } = await req.json();
-      this.table = new Table({ id: code, name, host, settings, onChange: () => this.changed() });
+      this.table = new Table({ id: code, name, host, settings, ...this.hooks() });
       this.table.setConnected(host.id, false);
       await this.save();
+      await saveTable(this.env.DB, this.table);
+      await saveMembership(this.env.DB, code, host.id);
       return json({ code });
     }
 
@@ -183,6 +197,16 @@ export class TableRoom extends DurableObject {
       const session = { ws: server, user };
       this.sockets.add(session);
       this.table.join(user);
+      if (!this.members.has(user.id)) {
+        // first sight of this player since the object woke: make sure D1 knows the table (older
+        // tables predate D1) and that this player sat at it
+        const first = this.members.size === 0;
+        this.members.add(user.id);
+        this.ctx.waitUntil((async () => {
+          if (first) await saveTable(this.env.DB, this.table);
+          await Promise.all([saveUser(this.env.DB, user), saveMembership(this.env.DB, this.table.id, user.id)]);
+        })());
+      }
       this.send(session, { type: 'chat', messages: this.chat });
       this.sendState(session);
       server.addEventListener('message', (ev) => this.onMessage(session, ev.data));
@@ -240,7 +264,20 @@ export class TableRoom extends DurableObject {
     }
   }
 
+  hooks() {
+    return {
+      onChange: () => this.changed(),
+      onSessionEnd: (t) => this.ctx.waitUntil(saveResults(this.env.DB, t)),
+    };
+  }
+
   changed() {
+    // keep the D1 row's status in step (waiting -> running)
+    const status = this.table?.status;
+    if (status && status !== this.lastStatus && status !== 'ended') {
+      if (this.lastStatus !== null) this.ctx.waitUntil(saveTable(this.env.DB, this.table));
+      this.lastStatus = status;
+    }
     if (!this.broadcastQueued) {
       this.broadcastQueued = true;
       queueMicrotask(() => {

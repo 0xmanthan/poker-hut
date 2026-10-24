@@ -321,3 +321,12 @@ test('host can free a seat; non-host cannot', () => {
   assert.equal(t.players.get('p2').seat, null);
   assert.equal(t.players.get('p2').stack, 1000);
 });
+
+test('ending the session reports the final bill sheet once', () => {
+  const ended = [];
+  const t = new Table({ id: 'T', name: 'x', host: { id: 'h', name: 'H' }, settings: { autoApproveBuyIns: true }, schedule: () => null, clear: () => {}, onSessionEnd: (tb) => ended.push(tb.billSheet().rows.length) });
+  t.requestBuyIn('h', 500);
+  t.endSession('h');
+  t.endSession('h');
+  assert.deepEqual(ended, [1]);
+});

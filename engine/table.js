@@ -23,7 +23,7 @@ const fail = (msg) => { throw new GameError(msg); };
 const isPosInt = (n) => Number.isInteger(n) && n > 0;
 
 export class Table {
-  constructor({ id, name, host, settings, timings, schedule, clear, now, onChange, shuffle }) {
+  constructor({ id, name, host, settings, timings, schedule, clear, now, onChange, onSessionEnd, shuffle }) {
     this.id = id;
     this.name = name;
     this.hostId = host.id;
@@ -46,6 +46,7 @@ export class Table {
     this.clear = clear ?? ((h) => clearTimeout(h));
     this.now = now ?? (() => Date.now());
     this.onChange = onChange ?? (() => {});
+    this.onSessionEnd = onSessionEnd ?? (() => {});
     // tests can stack the deck; real games always use a fresh CSPRNG seed
     this.shuffle = shuffle ?? (() => { const seed = newSeed(); return { seed, deck: deckFromSeed(seed) }; });
     this.flowTimer = null;
@@ -205,6 +206,7 @@ export class Table {
     this.hand = null;
     this.addLog('Session ended. Seeds revealed for verification.');
     this.changed();
+    this.onSessionEnd(this);
   }
 
   forceFold(uid) {
