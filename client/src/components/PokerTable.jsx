@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Card from './Card.jsx';
 import Avatar from './Avatar.jsx';
+import Chips, { ChipStack } from './Chips.jsx';
 import { chips, sound } from '../lib.js';
 
 function useSize(ref) {
@@ -33,17 +34,48 @@ function TimerBar({ deadline, total, serverNow }) {
   );
 }
 
-function ChipStack({ amount }) {
-  // a few coloured discs whose count grows with the bet, like a real stack
-  const discs = Math.min(5, 1 + Math.floor(Math.log10(Math.max(1, amount))));
-  return (
-    <span className="chipstack" aria-hidden="true">
-      {Array.from({ length: discs }, (_, i) => <span key={i} className={`disc d${i % 4}`} style={{ '--n': i }} />)}
-    </span>
-  );
+// The table is a stadium (straight sides, round ends). Seats are spaced by equal
+// distance along its edge, starting from the bottom centre and going clockwise,
+// so any number of players spreads evenly, like chairs around a real table.
+function stadium(cx, cy, W, H) {
+  const segs = [];
+  const line = (x0, y0, x1, y1) => segs.push({ line: true, x0, y0, x1, y1, len: Math.hypot(x1 - x0, y1 - y0) });
+  const arc = (ax, ay, r, t0, sweep) => segs.push({ ax, ay, r, t0, len: r * sweep });
+  if (W >= H) {
+    const r = H / 2, a = (W - H) / 2;
+    line(cx, cy + r, cx - a, cy + r);
+    arc(cx - a, cy, r, Math.PI / 2, Math.PI);
+    line(cx - a, cy - r, cx + a, cy - r);
+    arc(cx + a, cy, r, -Math.PI / 2, Math.PI);
+    line(cx + a, cy + r, cx, cy + r);
+  } else {
+    const r = W / 2, a = (H - W) / 2;
+    arc(cx, cy + a, r, Math.PI / 2, Math.PI / 2);
+    line(cx - r, cy + a, cx - r, cy - a);
+    arc(cx, cy - a, r, Math.PI, Math.PI);
+    line(cx + r, cy - a, cx + r, cy + a);
+    arc(cx, cy + a, r, 0, Math.PI / 2);
+  }
+  const total = segs.reduce((n, s) => n + s.len, 0);
+  // point at distance u along the edge, with the unit normal pointing into the table
+  return (u) => {
+    let left = ((u % total) + total) % total;
+    for (const s of segs) {
+      if (left > s.len && s !== segs[segs.length - 1]) { left -= s.len; continue; }
+      if (s.line) {
+        const k = s.len ? left / s.len : 0;
+        const x = s.x0 + (s.x1 - s.x0) * k, y = s.y0 + (s.y1 - s.y0) * k;
+        const nx = Math.sign(cx - x) * (s.x0 === s.x1 ? 1 : 0), ny = Math.sign(cy - y) * (s.y0 === s.y1 ? 1 : 0);
+        return { x, y, nx, ny };
+      }
+      const t = s.t0 + left / s.r;
+      return { x: s.ax + s.r * Math.cos(t), y: s.ay + s.r * Math.sin(t), nx: -Math.cos(t), ny: -Math.sin(t) };
+    }
+    return { x: cx, y: cy, nx: 0, ny: -1 };
+  };
 }
 
-export default function PokerTable({ state, serverNow, onSit, portrait }) {
+export default function PokerTable({ state, serverNow, onSit, send, portrait }) {
   const ref = useRef(null);
   const { w, h } = useSize(ref);
   const hand = state.hand;
@@ -52,127 +84,153 @@ export default function PokerTable({ state, serverNow, onSit, portrait }) {
   const pivot = mySeat ?? 0;
 
   // everything on the table scales with the space it has (--s in CSS)
-  const scale = portrait
-    ? Math.min(1.1, Math.max(0.62, Math.min(w / 420, h / 640)))
-    : Math.min(1.35, Math.max(0.68, Math.min(w / 1180, h / 660)));
+  const s = portrait
+    ? Math.min(1.15, Math.max(0.62, Math.min(w / 400, h / 660)))
+    : Math.min(1.3, Math.max(0.62, Math.min(w / 1180, h / 680)));
 
-  // felt geometry: leave room around the rail for the seats
-  const pad = portrait ? { x: 44 * scale, y: 80 * scale } : { x: 150 * scale, y: 92 * scale };
-  const cx = w / 2, cy = h / 2;
-  const rx = Math.max(60, w / 2 - pad.x), ry = Math.max(60, h / 2 - pad.y);
+  // seat footprint around its anchor (the centre of the name plate), in px
+  const foot = portrait
+    ? { half: 50 * s, up: 40 * s, upMe: 100 * s, down: 20 * s, top: 64 * s }
+    : { half: 81 * s, up: 60 * s, upMe: 136 * s, down: 26 * s, top: 94 * s };
 
-  const pos = useMemo(() => {
+  // felt rectangle: room above for the top seats' cards, at the sides for the plates
+  const felt = {
+    left: foot.half + 10 * s,
+    right: w - foot.half - 10 * s,
+    top: foot.top, // tall enough for cards turned up at showdown
+    bottom: h - foot.down - 14 * s,
+  };
+  const fw = Math.max(80, felt.right - felt.left), fh = Math.max(80, felt.bottom - felt.top);
+  const cx = felt.left + fw / 2, cy = felt.top + fh / 2;
+  const rail = (portrait ? 6 : 9) * s; // seats sit on the middle of the rail
+
+  const seatsAt = useMemo(() => {
+    const at = stadium(cx, cy, fw + rail * 2, fh + rail * 2);
+    const R = Math.min(fw, fh) / 2 + rail, a = Math.abs(fw - fh) / 2;
+    const perimeter = 4 * a + 2 * Math.PI * R;
     const out = [];
-    for (let s = 0; s < N; s++) {
-      const k = (s - pivot + N) % N;
-      const a = Math.PI / 2 + (k * 2 * Math.PI) / N;
-      const x = cx + rx * 1.02 * Math.cos(a);
-      // keep the whole seat (cards + name box) on screen
-      const half = (portrait ? 60 : 178) * scale;
-      out[s] = { x: Math.min(w - half, Math.max(half, x)), y: cy + ry * 1.04 * Math.sin(a) };
+    for (let seat = 0; seat < N; seat++) {
+      const k = (seat - pivot + N) % N;
+      const p = at((k * perimeter) / N);
+      const isMe = seat === mySeat;
+      // push bets and the button in from the seat, clear of its cards and plate
+      const clear = Math.abs(p.nx) * foot.half + Math.abs(p.ny) * (p.ny < 0 ? (isMe ? foot.upMe : foot.up) : foot.down);
+      const d = clear + (portrait ? 16 : 26) * s;
+      const tx = -p.ny, ty = p.nx;
+      const side = (portrait ? 34 : 62) * s;
+      out[seat] = {
+        ...p,
+        bet: { x: p.x + p.nx * d, y: p.y + p.ny * d },
+        btn: { x: p.x + p.nx * d + tx * side, y: p.y + p.ny * d + ty * side },
+      };
     }
     return out;
-  }, [N, pivot, cx, cy, rx, ry, w, scale, portrait]);
-
-  // a point `reach` px from the seat toward the table centre, measured on an ellipse
-  // so side seats reach past their cards and top/bottom seats past their box
-  const toward = (p, reachX, reachY) => {
-    const dx = cx - p.x, dy = cy - p.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len, uy = dy / len;
-    const d = Math.hypot(reachX * ux, reachY * uy);
-    return { x: p.x + ux * d, y: p.y + uy * d, ux, uy };
-  };
-
+  }, [N, pivot, mySeat, cx, cy, fw, fh, rail, s, portrait]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // dealing order: left of the button, around the table
   const dealIndex = useMemo(() => {
     if (!hand) return {};
-    const inHand = state.seats.filter((s) => s.inHand).map((s) => s.seat);
+    const inHand = state.seats.filter((x) => x.inHand).map((x) => x.seat);
     inHand.sort((a, b) => ((a - hand.buttonSeat - 1 + N) % N) - ((b - hand.buttonSeat - 1 + N) % N));
-    return Object.fromEntries(inHand.map((s, i) => [s, { i, n: inHand.length }]));
+    return Object.fromEntries(inHand.map((x, i) => [x, { i, n: inHand.length }]));
   }, [hand?.no]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // sound cues
+  // sound cues: a soft knock for a check, a quiet clink when chips go in, a flick per card
   const prev = useRef({});
   useEffect(() => {
     const p = prev.current;
+    const boardLen = (hand?.board.length ?? 0) + (hand?.board2?.length ?? 0) + (hand?.rabbit?.length ?? 0);
     if (hand && hand.no !== p.no) {
       const n = Object.keys(dealIndex).length * 2;
       for (let i = 0; i < n; i++) setTimeout(() => sound.play('card'), i * 90);
-    } else if (hand && hand.board.length > (p.board ?? 0)) {
-      const added = hand.board.length - (p.board ?? 0);
-      for (let i = 0; i < added; i++) setTimeout(() => sound.play('card'), i * 140);
+    } else if (hand && boardLen > (p.board ?? 0)) {
+      const added = boardLen - (p.board ?? 0);
+      for (let i = 0; i < added; i++) setTimeout(() => sound.play('card'), 160 + i * 130);
     }
-    const betSum = state.seats.reduce((a, s) => a + (s.bet || 0), 0);
-    if (hand && betSum > (p.betSum ?? 0) && hand.no === p.no) sound.play('chip');
+    const lasts = Object.fromEntries(state.seats.map((x) => [x.seat, x.last]));
+    if (hand && hand.no === p.no) {
+      for (const x of state.seats) {
+        if (!x.last || x.last === p.lasts?.[x.seat]) continue;
+        if (x.last === 'Check') sound.play('check');
+        else if (x.last !== 'Fold') sound.play('chip');
+      }
+    }
     if (hand?.toAct && hand.toAct === state.me?.uid && p.toAct !== hand.toAct) sound.play('turn');
     if (hand?.result && !p.result && hand.result.winners.some((x) => x.uid === state.me?.uid)) setTimeout(() => sound.play('win'), 300);
-    prev.current = { no: hand?.no, board: hand?.board.length ?? 0, betSum, toAct: hand?.toAct, result: !!hand?.result };
+    prev.current = { no: hand?.no, board: boardLen, lasts, toAct: hand?.toAct, result: !!hand?.result };
   });
 
   const result = hand?.result;
   const winners = new Set(result?.winners.map((x) => x.uid) ?? []);
   const winningCards = new Set(result && !result.byFold ? result.winners.flatMap((x) => x.cards) : []);
-  const avatarSize = Math.round((portrait ? 30 : 46) * scale);
+  const avatarSize = Math.round((portrait ? 22 : 34) * s);
+  const canSit = state.me && state.me.seat === null && state.status !== 'ended';
 
   return (
-    <div className={`felt-wrap ${portrait ? 'portrait' : ''}`} ref={ref} style={{ '--s': scale }}>
+    <div className={`felt-wrap ${portrait ? 'portrait' : ''}`} ref={ref} style={{ '--s': s }}>
       {w > 0 && (
         <>
-          <div className="felt" style={{ left: cx - rx, top: cy - ry, width: rx * 2, height: ry * 2 }}>
+          <div className="felt" style={{ left: felt.left, top: felt.top, width: fw, height: fh }}>
+            <div className="felt-line" />
             <div className="felt-mark">{state.name}</div>
           </div>
 
-          {/* community cards + pot */}
+          {/* pot, community cards, result */}
           <div className="center" style={{ left: cx, top: cy }}>
-            {hand && hand.pot > 0 && !result && (
-              <div className="pot">
-                <ChipStack amount={hand.pot} />
-                <span>Pot {chips(hand.pot)}</span>
-                {hand.pots.length > 1 && <span className="side-pots">{hand.pots.slice(1).map((p, i) => <em key={i}>Side {chips(p)}</em>)}</span>}
-              </div>
-            )}
-            <div className="board">
-              {[0, 1, 2, 3, 4].map((i) => {
-                const c = hand?.board[i];
-                if (c === undefined) return <div key={`${hand?.no}-slot-${i}`} className="card card-board slot" />;
-                const flopDelay = i < 3 ? i * 130 : 0;
-                return (
-                  <Card
-                    key={`${hand.no}-b${i}`}
-                    card={c}
-                    size="board"
-                    flip
-                    delay={flopDelay + 160}
-                    from={{ x: -40 - i * 8, y: -26 }}
-                    dim={winningCards.size > 0 && !winningCards.has(c)}
-                    glow={winningCards.has(c)}
-                  />
-                );
-              })}
+            <div className="pot-row">
+              {result && (
+                <div className="result" key={`r${hand.no}`}>
+                  {result.runs ? result.runs.map((run, r) => (
+                    <div key={r}>
+                      <em className="run-label">Run {r + 1}</em>
+                      {run.winners.map((x, i) => (
+                        <span key={x.uid}>{i > 0 && ', '}<strong>{x.uid === state.me?.uid ? 'You' : x.name}</strong> {chips(x.amount)}<span className="result-hand"> · {x.hand}</span></span>
+                      ))}
+                    </div>
+                  )) : result.winners.map((x) => (
+                    <div key={x.uid}>
+                      <strong>{x.uid === state.me?.uid ? 'You' : x.name}</strong> {x.uid === state.me?.uid ? 'win' : 'wins'} {chips(x.amount)}
+                      {x.hand && <span className="result-hand"> · {x.hand}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {hand && hand.pot > 0 && !result && (
+                <Chips amount={hand.pot} label="Pot" className="pot" />
+              )}
+              {hand && hand.pots.length > 1 && !result && (
+                <span className="side-pots" title={hand.pots.map((p, i) => `${i ? `Side ${i}` : 'Main'}: ${chips(p)}`).join('\n')}>
+                  {hand.pots.length - 1} side pot{hand.pots.length > 2 ? 's' : ''}
+                </span>
+              )}
             </div>
-            {result && (
-              <div className="result" key={`r${hand.no}`}>
-                {result.winners.map((x) => (
-                  <div key={x.uid}>
-                    <strong>{x.uid === state.me?.uid ? 'You' : x.name}</strong> {x.uid === state.me?.uid ? 'win' : 'wins'} {chips(x.amount)}
-                    {x.hand && <span className="result-hand"> with {x.hand}</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-            {!hand && state.status !== 'running' && <div className="center-note">{centerNote(state)}</div>}
-            {!hand && state.status === 'running' && state.seats.filter((x) => !x.empty && x.stack > 0 && !x.sittingOut).length < 2 && (
-              <div className="center-note">Waiting for at least two players with chips</div>
-            )}
+            {hand?.rit && !hand.rit.decided && <RunItTwice rit={hand.rit} state={state} serverNow={serverNow} />}
+            <div className="boards">
+              <Board cards={hand?.board} no={hand?.no} rabbit={hand?.rabbit} winningCards={winningCards} label={hand?.runs === 2 ? 'Run 1' : null} />
+              {/* the second row is reserved as soon as everyone agrees, so nothing jumps when it's dealt */}
+              {hand?.runs === 2 && <Board cards={hand.board2 ?? []} no={`${hand.no}-2`} shared={hand.rit?.from ?? 0} winningCards={winningCards} label="Run 2" second />}
+            </div>
+            <div className="below-board">
+              {(hand?.canRabbit || state.awaitingDeal) && (
+                <div className="after-hand">
+                  {hand?.canRabbit && <button className="felt-btn" onClick={() => send('rabbit')}>Show what was coming</button>}
+                  {state.awaitingDeal && (state.me?.isHost
+                    ? <button className="felt-btn primary" onClick={() => send('deal')}>Deal next hand</button>
+                    : <span className="felt-note">Waiting for the host to deal</span>)}
+                </div>
+              )}
+              {!hand && state.status !== 'running' && <div className="center-note">{centerNote(state)}</div>}
+              {!hand && state.status === 'running' && state.seats.filter((x) => !x.empty && x.stack > 0 && !x.sittingOut).length < 2 && (
+                <div className="center-note">Waiting for at least two players with chips</div>
+              )}
+            </div>
           </div>
 
           {/* pot flies to the winner(s) */}
           {result && result.winners.map((x) => {
-            const seat = state.seats.find((s) => s.uid === x.uid);
+            const seat = state.seats.find((q) => q.uid === x.uid);
             if (!seat) return null;
-            const p = pos[seat.seat];
+            const p = seatsAt[seat.seat];
             return (
               <div key={`win-${hand.no}-${x.uid}`} className="pot-fly" style={{ left: cx, top: cy, '--dx': `${p.x - cx}px`, '--dy': `${p.y - cy}px` }}>
                 <ChipStack amount={x.amount} />
@@ -180,67 +238,62 @@ export default function PokerTable({ state, serverNow, onSit, portrait }) {
             );
           })}
 
-          {state.seats.map((s) => {
-            const p = pos[s.seat];
-            if (s.empty) {
-              const canSit = state.me && state.me.seat === null && state.status !== 'ended';
+          {state.seats.map((seat) => {
+            const p = seatsAt[seat.seat];
+            if (seat.empty) {
               return (
-                <button key={s.seat} className="seat-empty" style={{ left: p.x, top: p.y }} disabled={!canSit} onClick={() => onSit(s.seat)} aria-label={`Seat ${s.seat + 1}${canSit ? ', take this seat' : ', empty'}`}>
-                  {canSit ? 'Sit here' : ''}
+                <button key={seat.seat} className={`seat-empty ${canSit ? 'open' : ''}`} style={{ left: p.x, top: p.y }} disabled={!canSit} onClick={() => onSit(seat.seat)} aria-label={`Seat ${seat.seat + 1}${canSit ? ', take this seat' : ', empty'}`}>
+                  {canSit && <span>Sit</span>}
                 </button>
               );
             }
-            const isMe = s.uid === state.me?.uid;
-            const acting = hand?.toAct === s.uid;
-            const betPos = portrait ? toward(p, 70 * scale, 80 * scale) : toward(p, 250 * scale, 112 * scale);
-            // dealer button sits on the felt beside the bet, offset sideways
-            const side = (portrait ? 34 : 62) * scale;
-            const btnPos = { x: betPos.x + betPos.uy * side, y: betPos.y - betPos.ux * side };
-            const onRight = !portrait && p.x > cx + 40;
-            const di = dealIndex[s.seat];
+            const isMe = seat.uid === state.me?.uid;
+            const acting = hand?.toAct === seat.uid;
+            const di = dealIndex[seat.seat];
+            // the last action is a small tab on the plate's top edge, so names never get squeezed
+            const tag = seat.last && !result && !seat.allIn ? seat.last : null; // all-in already shows in the stack line
+            const away = !seat.connected ? 'Offline' : seat.sittingOut && !seat.inHand ? 'Sitting out' : null;
+            const shown = seat.cards?.some((c) => c !== null);
             return (
-              <React.Fragment key={s.seat}>
+              <React.Fragment key={seat.seat}>
                 <div
-                  className={`seat ${isMe ? 'me' : ''} ${acting ? 'acting' : ''} ${s.folded ? 'folded' : ''} ${winners.has(s.uid) ? 'winner' : ''} ${!s.connected ? 'offline' : ''} ${p.y < cy ? 'top' : 'bottom'} ${onRight ? 'right' : ''}`}
+                  className={`seat ${isMe ? 'me' : ''} ${acting ? 'acting' : ''} ${seat.folded ? 'folded' : ''} ${winners.has(seat.uid) ? 'winner' : ''} ${!seat.connected ? 'offline' : ''}`}
                   style={{ left: p.x, top: p.y }}
                 >
-                  {s.cards && (
-                    <div className={`hole ${isMe ? 'mine' : ''}`}>
-                      {s.cards.map((c, i) => (
+                  {seat.cards && (
+                    <div className={`hole ${isMe ? 'mine' : ''} ${shown && !isMe ? 'shown' : ''}`}>
+                      {seat.cards.map((c, i) => (
                         <Card
-                          key={`${hand.no}-${s.seat}-${i}`}
+                          key={`${hand.no}-${seat.seat}-${i}`}
                           card={c}
                           size={isMe ? 'mine' : 'seat'}
                           flip
                           delay={di ? (i * di.n + di.i) * 90 + (isMe ? 380 : 0) : 0}
                           from={di && !result ? { x: cx - p.x, y: cy - p.y } : undefined}
-                          dim={s.folded || (winningCards.size > 0 && c !== null && !winningCards.has(c))}
+                          dim={(isMe && seat.folded) || (winningCards.size > 0 && c !== null && !winningCards.has(c))}
                           glow={winningCards.has(c)}
                         />
                       ))}
                     </div>
                   )}
                   <div className="plate">
-                    <Avatar name={s.name} src={s.avatar} size={avatarSize} />
-                    {acting && hand.deadline && <TimerBar deadline={hand.deadline} total={state.settings.turnSeconds} serverNow={serverNow} />}
-                    <span className="plate-text">
-                      <span className="pname">{isMe ? 'You' : s.name}</span>
-                      <span className="pstack">{s.allIn ? 'All-in' : chips(s.stack)}</span>
+                    <span className="avatar-wrap" title={away ?? undefined}>
+                      <Avatar name={seat.name} src={seat.avatar} size={avatarSize} />
+                      {away && <span className={`status-dot ${seat.connected ? 'away' : 'offline'}`} aria-label={away} />}
                     </span>
-                    {s.last && !result && <span className={`last last-${s.last.toLowerCase().replace(/[^a-z]/g, '')}`}>{s.last}</span>}
-                    {s.sittingOut && !s.inHand && <span className="last away">Away</span>}
-                    {!s.connected && <span className="last away">Offline</span>}
-                    {hand && s.uid === state.hostId && <span className="host-dot" title="Host" />}
+                    <span className="plate-text">
+                      <span className="pname">{isMe ? 'You' : seat.name}</span>
+                      <span className="pstack">{seat.allIn ? 'All-in' : chips(seat.stack)}</span>
+                    </span>
+                    {tag && <span className={`said said-${tag.toLowerCase().replace(/[^a-z]/g, '')}`} key={tag}>{tag}</span>}
+                    {acting && hand.deadline && <TimerBar deadline={hand.deadline} total={state.settings.turnSeconds} serverNow={serverNow} />}
                   </div>
                 </div>
-                {s.bet > 0 && !result && (
-                  <div className="bet" style={{ left: betPos.x, top: betPos.y }} key={`bet-${hand.no}-${s.seat}-${hand.street}`}>
-                    <ChipStack amount={s.bet} />
-                    <span>{chips(s.bet)}</span>
-                  </div>
+                {seat.bet > 0 && !result && (
+                  <Chips key={`bet-${hand.no}-${seat.seat}-${hand.street}`} amount={seat.bet} className="bet" style={{ left: p.bet.x, top: p.bet.y }} />
                 )}
-                {hand && hand.buttonSeat === s.seat && (
-                  <div className="dealer-btn" style={{ left: btnPos.x, top: btnPos.y }} aria-label="Dealer button">D</div>
+                {hand && hand.buttonSeat === seat.seat && (
+                  <div className="dealer-btn" style={{ left: p.btn.x, top: p.btn.y }} aria-label="Dealer button">D</div>
                 )}
               </React.Fragment>
             );
@@ -251,8 +304,63 @@ export default function PokerTable({ state, serverNow, onSit, portrait }) {
   );
 }
 
+function Board({ cards = [], no, rabbit, shared = 0, winningCards, second, label }) {
+  return (
+    <div className={`board ${second ? 'second' : ''}`}>
+      {label && <span className="run-tag">{label}</span>}
+      {[0, 1, 2, 3, 4].map((i) => {
+        const c = cards?.[i];
+        if (c === undefined) {
+          const r = rabbit?.[i - (cards?.length ?? 0)];
+          if (r !== undefined) return <Card key={`${no}-r${i}`} card={r} size="board" flip delay={(i - cards.length) * 130} className="rabbit" />;
+          return <div key={`${no}-slot-${i}`} className="card card-board slot" aria-hidden="true" />;
+        }
+        // the second run shares the cards dealt before the all-in
+        if (second && i < shared) return <div key={`${no}-s${i}`} className="card card-board slot shared" aria-hidden="true" />;
+        const flopDelay = i < 3 ? i * 130 : 0;
+        return (
+          <Card
+            key={`${no}-b${i}`}
+            card={c}
+            size="board"
+            flip
+            delay={flopDelay + 160}
+            from={{ x: -40 - i * 8, y: -26 }}
+            dim={winningCards.size > 0 && !winningCards.has(c)}
+            glow={winningCards.has(c)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function RunItTwice({ rit, state, serverNow }) {
+  const me = state.me?.uid;
+  const mine = me in rit.votes ? rit.votes[me] : undefined;
+  const [left, setLeft] = useState(0);
+  useEffect(() => {
+    const tick = () => setLeft(Math.max(0, Math.ceil((rit.deadline - serverNow()) / 1000)));
+    tick();
+    const t = setInterval(tick, 250);
+    return () => clearInterval(t);
+  }, [rit.deadline, serverNow]);
+  const name = (uid) => (uid === me ? 'You' : state.players.find((p) => p.uid === uid)?.name ?? '?');
+  return (
+    <div className="rit" role="group" aria-label="Run it twice?">
+      <div className="rit-head"><strong>Run it twice?</strong><span className="rit-time">{left}s</span></div>
+      <div className="rit-votes">
+        {Object.entries(rit.votes).map(([uid, v]) => (
+          <span key={uid} className={`vote ${v === true ? 'yes' : v === false ? 'no' : ''}`}>{name(uid)}</span>
+        ))}
+      </div>
+      <span className="felt-note">{mine === null ? 'Choose below. ' : ''}One "once" and the board runs once.</span>
+    </div>
+  );
+}
+
 function centerNote(state) {
   if (state.status === 'ended') return 'Session over. The bill sheet has the final numbers.';
   if (state.status === 'paused') return 'Paused by the host';
-  return state.me?.isHost ? 'Take a seat, buy in, then press Start game' : 'Waiting for the host to start';
+  return state.me?.isHost ? 'Take a seat, buy in, then press Start' : 'Waiting for the host to start';
 }

@@ -14,9 +14,15 @@ export const DEFAULT_SETTINGS = {
   turnSeconds: 30,
   autoApproveBuyIns: false,
   maxSeats: 9,
+  pace: 'normal',        // how long the dealer pauses between streets and hands
+  autoDeal: true,        // false: the host presses "Deal" for every hand
+  rabbitHunt: true,      // after a hand ends early, anyone may see the cards that would have come
+  runItTwice: true,      // all-in before the river: offer two boards; any one "no" means once
 };
 
-const TIMINGS = { street: 700, runout: 1600, showdown: 5000, foldWin: 2200, nextHand: 900 };
+// pauses at normal pace, in ms; `pace` scales all but the vote window
+const TIMINGS = { street: 1800, runout: 2600, showdown: 7000, foldWin: 3500, nextHand: 2500, ritVote: 10000 };
+export const PACES = { fast: 0.6, normal: 1, relaxed: 1.5 };
 
 export class GameError extends Error {}
 const fail = (msg) => { throw new GameError(msg); };
@@ -51,6 +57,7 @@ export class Table {
     this.shuffle = shuffle ?? (() => { const seed = newSeed(); return { seed, deck: deckFromSeed(seed) }; });
     this.flowTimer = null;
     this.turnTimer = null;
+    this.dealNow = false;    // host asked for the next hand (manual dealing)
     this.seq = 0;
     this.join(host);
   }
@@ -161,9 +168,13 @@ export class Table {
   updateSettings(uid, patch) {
     this.requireHost(uid);
     const next = sanitizeSettings({ ...this.settings, ...patch, maxSeats: this.settings.maxSeats });
+    const dealingResumes = next.autoDeal && !this.settings.autoDeal;
     this.settings = next;
     this.addLog('Host updated the table settings');
     this.changed();
+    // switched back to automatic dealing while a finished hand was waiting on the host
+    if (dealingResumes && this.hand?.over && !this.flowTimer) this.later(this.wait('nextHand'), () => this.cleanupHand());
+    else if (dealingResumes) this.maybeStartHand();
   }
 
   start(uid) {
@@ -171,6 +182,7 @@ export class Table {
     if (this.status === 'ended') fail('This session has ended.');
     this.status = 'running';
     this.endAfterHand = false;
+    this.dealNow = true;
     this.addLog('Game started');
     this.changed();
     this.maybeStartHand();
@@ -321,8 +333,28 @@ export class Table {
 
   maybeStartHand() {
     if (this.status !== 'running' || this.hand?.over === false || this.flowTimer) return;
+    if (!this.settings.autoDeal && !this.dealNow) return;
     if (this.eligibleSeats().length < 2) return;
-    this.later(this.timings.nextHand, () => this.startHand());
+    this.later(this.wait('nextHand'), () => this.startHand());
+  }
+
+  // manual dealing: the host deals the next hand (the last result stays up until then)
+  dealNext(uid) {
+    this.requireHost(uid);
+    if (this.status !== 'running') fail(this.status === 'ended' ? 'This session has ended.' : 'Start the game first.');
+    if (this.hand && !this.hand.over) fail('Finish this hand first.');
+    this.dealNow = true;
+    if (this.hand?.over) { this.clear(this.flowTimer); this.flowTimer = null; this.cleanupHand(); return; }
+    this.changed();
+    this.maybeStartHand();
+  }
+
+  awaitingDeal() {
+    return this.status === 'running' && !this.settings.autoDeal && !this.dealNow && (!this.hand || this.hand.over);
+  }
+
+  wait(key) {
+    return key === 'ritVote' ? this.timings.ritVote : Math.round(this.timings[key] * (PACES[this.settings.pace] ?? 1));
   }
 
   later(ms, fn) {
@@ -345,6 +377,7 @@ export class Table {
     const order = [];
     for (let s = next(this.buttonSeat), i = 0; i < seats.length; i++, s = next(s)) order.push(s);
 
+    this.dealNow = false;
     const { seed, deck } = this.shuffle();
     const h = {
       no: ++this.handNo,
@@ -369,6 +402,10 @@ export class Table {
       over: false,
       result: null,
       startStacks: {},
+      runs: 1,         // 2 once everyone agrees to run it twice
+      rit: null,       // { votes: { uid: true|false|null }, deadline, from } while asking
+      board2: null,    // second run: the shared cards plus its own
+      rabbit: null,    // cards shown after the hand, for curiosity only
     };
     this.hand = h;
     this.lastResult = null;
@@ -556,13 +593,107 @@ export class Table {
 
   endStreet() {
     const h = this.hand;
+    this.returnUncalled();
     for (const s of h.ps.values()) s.bet = 0;
     h.currentBet = 0;
     this.changed();
-    if (h.street === 'river') return this.showdown();
+    if (h.street === 'river') return h.runs === 2 && !h.board2 ? this.dealSecondRun() : this.showdown();
     const runout = this.actorStates().length <= 1;
     if (runout && !h.showAll) h.showAll = true; // all-in: cards go face up, board runs out
-    this.later(runout ? this.timings.runout : this.timings.street, () => this.dealStreet());
+    if (runout && this.settings.runItTwice && !h.rit && this.liveStates().length >= 2) return this.askRunItTwice();
+    this.later(this.wait(runout ? 'runout' : 'street'), () => this.dealStreet());
+  }
+
+  // a bet nobody could match goes back to its owner before the next street
+  returnUncalled() {
+    const h = this.hand;
+    const states = [...h.ps.values()];
+    const top = states.reduce((a, s) => (s.total > a.total ? s : a), states[0]);
+    const next = Math.max(0, ...states.filter((s) => s !== top).map((s) => s.total));
+    const extra = top.total - next;
+    if (extra <= 0 || top.folded) return;
+    top.total -= extra;
+    top.bet = Math.max(0, top.bet - extra);
+    this.players.get(top.uid).stack += extra;
+    if (top.allIn && this.players.get(top.uid).stack > 0) { top.allIn = false; top.last = null; }
+    this.addLog(`${extra} uncalled returned to ${this.players.get(top.uid).name}`);
+  }
+
+  // ---------- run it twice ----------
+
+  askRunItTwice() {
+    const h = this.hand;
+    h.rit = { votes: Object.fromEntries(this.liveStates().map((s) => [s.uid, null])), deadline: this.now() + this.wait('ritVote'), from: h.board.length, decided: false };
+    this.addLog('All-in. Run it twice?');
+    this.changed();
+    // no answer counts as no
+    this.later(this.wait('ritVote'), () => this.decideRunItTwice(1));
+  }
+
+  voteRunItTwice(uid, yes) {
+    const h = this.hand;
+    if (!h || h.over || !h.rit || h.rit.decided) fail('There is nothing to vote on.');
+    if (!(uid in h.rit.votes)) fail('Only players in the pot vote.');
+    if (h.rit.votes[uid] !== null) fail('You already voted.');
+    h.rit.votes[uid] = !!yes;
+    if (!yes) return this.decideRunItTwice(1);
+    if (Object.values(h.rit.votes).every((v) => v === true)) return this.decideRunItTwice(2);
+    this.changed();
+  }
+
+  decideRunItTwice(runs) {
+    const h = this.hand;
+    if (!h || h.over || !h.rit || h.rit.decided) return;
+    h.rit.decided = true;
+    h.runs = runs;
+    this.addLog(runs === 2 ? 'Everyone agreed: running it twice' : 'Running it once');
+    this.changed();
+    this.later(this.wait('runout'), () => this.dealStreet());
+  }
+
+  // the second board keeps the cards already out and deals the rest from the
+  // same deck, burning before each street as usual. It starts only after the
+  // first run is complete, one street at a time, so the two never overlap.
+  dealSecondRun() {
+    const h = this.hand;
+    h.board2 = h.board.slice(0, h.rit.from);
+    this.addLog('Second run');
+    this.changed();
+    this.later(this.wait('runout'), () => this.dealSecondStreet());
+  }
+
+  dealSecondStreet() {
+    const h = this.hand;
+    if (!h || h.over) return;
+    h.pos++; // burn
+    const n = h.board2.length === 0 ? 3 : 1;
+    for (let i = 0; i < n; i++) h.board2.push(h.deck[h.pos++]);
+    this.history[this.history.length - 1].board2 = [...h.board2];
+    this.changed();
+    this.later(this.wait('runout'), () => (h.board2.length < 5 ? this.dealSecondStreet() : this.showdown()));
+  }
+
+  // ---------- rabbit hunt ----------
+
+  rabbitHunt(uid) {
+    const h = this.hand;
+    this.player(uid);
+    if (!this.settings.rabbitHunt) fail('Rabbit hunting is off at this table.');
+    if (!h || !h.over) fail('Wait for the hand to finish.');
+    if (h.rabbit || h.board.length >= 5 || h.board2) return;
+    const cards = [];
+    let pos = h.pos;
+    for (let len = h.board.length; len < 5;) {
+      pos++; // burn
+      const n = len === 0 ? 3 : 1;
+      for (let i = 0; i < n; i++) cards.push(h.deck[pos++]);
+      len += n;
+    }
+    h.rabbit = cards;
+    this.addLog(`${this.players.get(uid).name} went rabbit hunting`);
+    // keep the result on screen long enough to see them
+    if (this.flowTimer) this.later(this.wait('foldWin'), () => this.cleanupHand());
+    this.changed();
   }
 
   dealStreet() {
@@ -598,39 +729,57 @@ export class Table {
     const h = this.hand;
     h.street = 'showdown';
     this.setTurn(null);
+    const boards = h.board2 ? [h.board, h.board2] : [h.board];
     const pots = buildPots([...h.ps.values()]);
     const live = this.liveStates();
     const shown = {};
-    const best = {};
+    const best = boards.map(() => ({}));
     for (const s of live) {
-      const b = bestFive([...s.cards, ...h.board]);
-      best[s.uid] = b;
-      shown[s.uid] = { cards: s.cards, hand: describe(b.score), best: b.cards };
+      boards.forEach((board, r) => { best[r][s.uid] = bestFive([...s.cards, ...board]); });
+      shown[s.uid] = { cards: s.cards, hand: describe(best[0][s.uid].score), best: best[0][s.uid].cards };
     }
-    // odd chips go to the first winner left of the button
+    // odd chips go to the first winner left of the button (and to the first run)
     const seatRank = (uid) => { const seat = h.ps.get(uid).seat; return (seat - h.buttonSeat - 1 + this.seats.length) % this.seats.length; };
     const won = new Map();
+    const runs = boards.map((board) => ({ board, won: new Map() }));
     const potResults = [];
     for (const pot of pots) {
-      const top = Math.max(...pot.eligible.map((u) => best[u].score));
-      const winners = pot.eligible.filter((u) => best[u].score === top).sort((a, b) => seatRank(a) - seatRank(b));
-      const share = Math.floor(pot.amount / winners.length);
-      let odd = pot.amount - share * winners.length;
-      for (const u of winners) {
-        const amt = share + (odd-- > 0 ? 1 : 0);
-        won.set(u, (won.get(u) ?? 0) + amt);
-      }
-      potResults.push({ amount: pot.amount, winners });
+      const parts = boards.length === 2 ? [Math.ceil(pot.amount / 2), Math.floor(pot.amount / 2)] : [pot.amount];
+      const potWinners = new Set();
+      parts.forEach((amount, r) => {
+        const top = Math.max(...pot.eligible.map((u) => best[r][u].score));
+        const winners = pot.eligible.filter((u) => best[r][u].score === top).sort((a, b) => seatRank(a) - seatRank(b));
+        const share = Math.floor(amount / winners.length);
+        let odd = amount - share * winners.length;
+        for (const u of winners) {
+          const amt = share + (odd-- > 0 ? 1 : 0);
+          won.set(u, (won.get(u) ?? 0) + amt);
+          runs[r].won.set(u, (runs[r].won.get(u) ?? 0) + amt);
+          potWinners.add(u);
+        }
+      });
+      potResults.push({ amount: pot.amount, winners: [...potWinners] });
     }
     const winners = [];
     for (const [uid, amount] of won) {
       const p = this.players.get(uid);
       p.stack += amount;
-      winners.push({ uid, name: p.name, amount, hand: shown[uid].hand, cards: best[uid].cards });
-      this.addLog(`${p.name} wins ${amount} with ${shown[uid].hand}`);
+      const r = runs.findIndex((run) => run.won.has(uid));
+      winners.push({ uid, name: p.name, amount, hand: describe(best[r][uid].score), cards: [...new Set(runs.flatMap((run, i) => (run.won.has(uid) ? best[i][uid].cards : [])))] });
+    }
+    for (const [r, run] of runs.entries()) {
+      for (const [uid, amount] of run.won) {
+        this.addLog(`${this.players.get(uid).name} wins ${amount}${runs.length === 2 ? ` on run ${r + 1}` : ''} with ${describe(best[r][uid].score)}`);
+      }
     }
     h.showAll = true;
-    this.finish({ byFold: false, winners, pots: potResults, shown });
+    this.finish({
+      byFold: false, winners, pots: potResults, shown,
+      runs: runs.length === 2 ? runs.map((run, r) => ({
+        board: run.board,
+        winners: [...run.won].map(([uid, amount]) => ({ uid, name: this.players.get(uid).name, amount, hand: describe(best[r][uid].score), cards: best[r][uid].cards })),
+      })) : null,
+    });
   }
 
   finish(result) {
@@ -640,10 +789,12 @@ export class Table {
     this.lastResult = { no: h.no, ...result };
     const rec = this.history[this.history.length - 1];
     rec.board = [...h.board];
+    if (h.board2) rec.board2 = [...h.board2];
     rec.shown = Object.fromEntries(Object.entries(result.shown).map(([u, v]) => [u, v.cards]));
     rec.winners = result.winners.map((w) => ({ uid: w.uid, amount: w.amount }));
     this.changed();
-    this.later(result.byFold ? this.timings.foldWin : this.timings.showdown, () => this.cleanupHand());
+    // with manual dealing the result stays up until the host deals again
+    if (this.settings.autoDeal) this.later(this.wait(result.byFold ? 'foldWin' : 'showdown'), () => this.cleanupHand());
   }
 
   cleanupHand() {
@@ -702,27 +853,30 @@ export class Table {
         toAct: h.toAct, deadline: h.deadline, currentBet: h.currentBet, commitment: h.commitment,
         pot: potTotal, pots: h.over ? [] : buildPots(states.map((s) => ({ ...s, total: s.total - s.bet }))).map((p) => p.amount),
         result: h.result, over: h.over,
+        board2: h.board2, rabbit: h.rabbit, runs: h.runs,
+        rit: h.rit && { votes: h.rit.votes, deadline: h.rit.deadline, decided: h.rit.decided, from: h.rit.from },
+        canRabbit: !!(this.settings.rabbitHunt && h.over && !h.rabbit && !h.board2 && h.board.length < 5),
       };
     }
     const myHandName = h && h.ps.get(uid) && !h.ps.get(uid).folded && h.board.length >= 3 ? describe(evaluate([...h.ps.get(uid).cards, ...h.board])) : null;
     return {
       id: this.id, name: this.name, hostId: this.hostId, status: this.status, settings: this.settings,
       serverNow: this.now(),
-      seats, hand, buttonSeat: this.buttonSeat,
+      seats, hand, buttonSeat: this.buttonSeat, awaitingDeal: this.awaitingDeal(),
       me: me ? { uid, seat: me.seat, stack: me.stack, isHost, sittingOut: me.sittingOut, options: this.options(uid), handName: myHandName, pendingRequest: this.requests.find((r) => r.uid === uid) ?? null } : null,
       players: [...this.players.values()].map((p) => ({ uid: p.id, name: p.name, avatar: p.avatar, seat: p.seat, stack: p.stack, connected: p.connected })),
       requests: isHost ? this.requests : [],
       pendingOps: this.pendingOps.map((o) => ({ ...o })),
       bill: this.billSheet(),
       log: this.log.slice(-40),
-      fairness: this.history.slice(-30).map((r) => ({ no: r.no, commitment: r.commitment, board: r.board, seed: this.status === 'ended' ? r.seed : null, order: r.order })),
+      fairness: this.history.slice(-30).map((r) => ({ no: r.no, commitment: r.commitment, board: r.board, board2: r.board2 ?? null, seed: this.status === 'ended' ? r.seed : null, order: r.order })),
     };
   }
 
   // seeds for every hand, only once the session is over
   revealedHistory() {
     if (this.status !== 'ended') return [];
-    return this.history.map((r) => ({ no: r.no, commitment: r.commitment, seed: r.seed, order: r.order, board: r.board, shown: r.shown ?? {} }));
+    return this.history.map((r) => ({ no: r.no, commitment: r.commitment, seed: r.seed, order: r.order, board: r.board, board2: r.board2 ?? null, shown: r.shown ?? {} }));
   }
 
   // ---------- persistence ----------
@@ -810,5 +964,9 @@ function sanitizeSettings(s) {
     turnSeconds: int(s.turnSeconds, 0, 300, 30),
     autoApproveBuyIns: !!s.autoApproveBuyIns,
     maxSeats: int(s.maxSeats, 2, 10, 9),
+    pace: s.pace in PACES ? s.pace : 'normal',
+    autoDeal: s.autoDeal !== false,
+    rabbitHunt: s.rabbitHunt !== false,
+    runItTwice: s.runItTwice !== false,
   };
 }

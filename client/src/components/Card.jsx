@@ -1,8 +1,11 @@
 import React from 'react';
-import { rankLabel, suitOf, isRed, SUIT_GLYPHS, cardName } from '../lib.js';
+import Suit from './Suit.jsx';
+import { rankLabel, suitOf, isRed, cardName } from '../lib.js';
 
 // A playing card with a real 3D flip. `card` null = face down.
 // `flip` plays the turn-over animation on mount (after `delay` ms).
+// The face is a big corner index plus one large suit: readable at any size.
+// Everything else (fonts, frame, back, colours) comes from the theme.
 export default function Card({ card, size = 'md', flip = false, delay = 0, dim = false, glow = false, from, className = '' }) {
   const faceUp = card !== null && card !== undefined;
   const style = { '--delay': `${delay}ms` };
@@ -15,15 +18,15 @@ export default function Card({ card, size = 'md', flip = false, delay = 0, dim =
       role="img"
     >
       <div className="card-inner">
-        <div className="card-face card-front">
+        <div className={`card-face card-front ${faceUp && isRed(card) ? 'red' : 'black'}`}>
           {faceUp && (
-            <div className={isRed(card) ? 'red' : 'black'}>
-              <span className="corner">
-                <span className="rank">{rankLabel(card)}</span>
-                <span className="suit">{SUIT_GLYPHS[suitOf(card)]}</span>
+            <>
+              <span className="idx">
+                <span className={`rank ${rankLabel(card) === '10' ? 'ten' : ''}`}>{rankLabel(card)}</span>
+                <Suit suit={suitOf(card)} className="idx-suit" />
               </span>
-              <span className="pip">{SUIT_GLYPHS[suitOf(card)]}</span>
-            </div>
+              <span className="art"><Suit suit={suitOf(card)} /></span>
+            </>
           )}
         </div>
         <div className="card-face card-back" />

@@ -1,11 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { chips } from '../lib.js';
+import Icon from './Icons.jsx';
 
+// Lives in the fixed-height dock under the table. Its height never changes with
+// whose turn it is, so the table doesn't resize; bet sizing pops up over the felt.
 export default function ActionBar({ state, send }) {
   const me = state.me;
   const hand = state.hand;
   const opt = me?.options;
   const [raiseTo, setRaiseTo] = useState(0);
+  const [sizing, setSizing] = useState(false);
   const [pre, setPre] = useState(null); // 'checkfold' | 'callany'
   const inputRef = useRef(null);
 
@@ -30,6 +34,7 @@ export default function ActionBar({ state, send }) {
   }, [opt, hand, state.seats]);
 
   useEffect(() => { if (opt?.canRaise) setRaiseTo(opt.minTo); }, [opt?.minTo, opt?.canRaise, hand?.no, hand?.street]);
+  useEffect(() => { if (!opt) setSizing(false); }, [opt]);
 
   // clear queued pre-actions when a new hand starts
   useEffect(() => { setPre(null); }, [hand?.no]);
@@ -41,16 +46,29 @@ export default function ActionBar({ state, send }) {
     setPre(null);
   }, [opt, pre, send]);
 
-  const act = (type, extra = {}) => send('act', { action: { type, ...extra } });
+  const act = (type, extra = {}) => { setSizing(false); send('act', { action: { type, ...extra } }); };
+  const onlyAllIn = opt?.canRaise && opt.minTo >= opt.maxTo;
+  const valid = opt?.canRaise && Number.isInteger(raiseTo) && raiseTo >= opt.minTo && raiseTo <= opt.maxTo;
+  const raise = () => {
+    if (onlyAllIn) return act('raise', { to: opt.maxTo });
+    if (!sizing) { setSizing(true); return; }
+    if (valid) act('raise', { to: raiseTo });
+  };
+
+  useEffect(() => { if (sizing) inputRef.current?.select(); }, [sizing]);
 
   useEffect(() => {
     if (!opt) return;
     const onKey = (e) => {
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.metaKey || e.ctrlKey) return;
+      if (e.metaKey || e.ctrlKey) return;
+      if (e.key === 'Escape') { setSizing(false); return; }
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
       const k = e.key.toLowerCase();
+      // F fold, K check, C call (checks when there's nothing to call), R raise
       if (k === 'f') act('fold');
-      else if (k === 'c' || k === 'k') act(opt.canCheck ? 'check' : 'call');
-      else if (k === 'r' && opt.canRaise) inputRef.current?.focus();
+      else if (k === 'k') { if (opt.canCheck) act('check'); }
+      else if (k === 'c') act(opt.canCheck ? 'check' : 'call');
+      else if (k === 'r' && opt.canRaise) { e.preventDefault(); raise(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -58,65 +76,86 @@ export default function ActionBar({ state, send }) {
 
   if (!me || me.seat === null || state.status === 'ended') return null;
 
-  if (opt) {
-    const allIn = opt.canRaise && raiseTo >= opt.maxTo;
-    const callAllIn = !opt.canCheck && opt.toCall >= mySeat.stack;
-    const valid = Number.isInteger(raiseTo) && raiseTo >= opt.minTo && raiseTo <= opt.maxTo;
+  const handName = me.handName && <span className="handname">{me.handName}</span>;
+
+  // run it twice: the decision lives where every other decision does
+  const rit = hand?.rit;
+  if (rit && !rit.decided && rit.votes[me.uid] === null) {
     return (
-      <div className="actionbar live" role="group" aria-label="Your action">
-        {me.handName && <div className="handname">{me.handName}</div>}
-        {opt.canRaise && (
-          <div className="raise-row">
-            <div className="presets">
+      <>
+        <div className="dock-left"><span className="handname">Run it twice?</span></div>
+        <div className="dock-right" role="group" aria-label="Run it twice?">
+          <button className="act fold" onClick={() => send('rit', { yes: false })}>Run once</button>
+          <button className="act raise" onClick={() => send('rit', { yes: true })}>Run it twice</button>
+        </div>
+      </>
+    );
+  }
+
+  if (opt) {
+    const callAllIn = !opt.canCheck && opt.toCall >= mySeat.stack;
+    const raiseLabel = onlyAllIn || (sizing && raiseTo >= opt.maxTo) ? 'All-in'
+      : opt.isBet ? 'Bet' : 'Raise';
+    return (
+      <>
+        <div className="dock-left">{handName}</div>
+        <div className="dock-right" role="group" aria-label="Your action">
+          <button className="act fold" onClick={() => act('fold')}>Fold<kbd>F</kbd></button>
+          {opt.canCheck
+            ? <button className="act check" onClick={() => act('check')}>Check<kbd>K</kbd></button>
+            : <button className="act call" onClick={() => act('call')}>{callAllIn ? 'All-in' : 'Call'} <b>{chips(opt.toCall)}</b><kbd>C</kbd></button>}
+          {opt.canRaise && (
+            <button className={`act raise ${sizing ? 'sizing' : ''}`} disabled={sizing && !valid} onClick={raise}>
+              {raiseLabel}{(sizing || onlyAllIn) && <b>{chips(onlyAllIn ? opt.maxTo : raiseTo || 0)}</b>}<kbd>R</kbd>
+            </button>
+          )}
+        </div>
+        {sizing && (
+          <div className="sizer" role="dialog" aria-label="Choose your raise">
+            <div className="sizer-presets">
               {presets.map(([label, v]) => (
-                <button key={label} className={`chip-btn ${raiseTo === v ? 'on' : ''}`} onClick={() => setRaiseTo(v)}>{label}</button>
+                <button key={label} className={`preset ${raiseTo === v ? 'on' : ''}`} onClick={() => setRaiseTo(v)}>{label}</button>
               ))}
             </div>
-            <div className="slider-row">
+            <div className="sizer-row">
+              <button className="step" onClick={() => setRaiseTo((v) => Math.max(opt.minTo, v - state.settings.bigBlind))} aria-label="Less">−</button>
               <input type="range" min={opt.minTo} max={opt.maxTo} step={1} value={raiseTo} onChange={(e) => setRaiseTo(Number(e.target.value))} aria-label="Raise amount" />
+              <button className="step" onClick={() => setRaiseTo((v) => Math.min(opt.maxTo, v + state.settings.bigBlind))} aria-label="More">+</button>
               <input ref={inputRef} className="amount" type="number" inputMode="numeric" min={opt.minTo} max={opt.maxTo} value={raiseTo}
                 onChange={(e) => setRaiseTo(Math.floor(Number(e.target.value)))}
                 onKeyDown={(e) => { if (e.key === 'Enter' && valid) act('raise', { to: raiseTo }); }}
                 aria-label="Raise to" />
             </div>
+            <button className="sizer-close" onClick={() => setSizing(false)}>Cancel</button>
           </div>
         )}
-        <div className="act-row">
-          <button className="act fold" onClick={() => act('fold')}>Fold <kbd>F</kbd></button>
-          {opt.canCheck
-            ? <button className="act check" onClick={() => act('check')}>Check <kbd>C</kbd></button>
-            : <button className="act call" onClick={() => act('call')}>{callAllIn ? 'Call all-in' : 'Call'} {chips(opt.toCall)} <kbd>C</kbd></button>}
-          {opt.canRaise && (
-            <button className="act raise" disabled={!valid} onClick={() => act('raise', { to: raiseTo })}>
-              {allIn ? 'All-in' : opt.isBet ? 'Bet' : 'Raise to'} {chips(raiseTo || 0)}
-            </button>
-          )}
-        </div>
-      </div>
+      </>
     );
   }
 
   return (
-    <div className="actionbar">
-      {me.handName && <div className="handname">{me.handName}</div>}
-      {inHand && (
-        <div className="pre-row">
-          <label className={`pre ${pre === 'checkfold' ? 'on' : ''}`}>
-            <input type="checkbox" checked={pre === 'checkfold'} onChange={(e) => setPre(e.target.checked ? 'checkfold' : null)} /> Check / fold
-          </label>
-          <label className={`pre ${pre === 'callany' ? 'on' : ''}`}>
-            <input type="checkbox" checked={pre === 'callany'} onChange={(e) => setPre(e.target.checked ? 'callany' : null)} /> Call any
-          </label>
-        </div>
-      )}
-      {!inHand && mySeat && (
-        <div className="pre-row">
-          {mySeat.sittingOut
-            ? <button className="btn primary" onClick={() => send('sitout', { value: false })}>I'm back</button>
-            : <button className="btn ghost" onClick={() => send('sitout', { value: true })}>Sit out next hand</button>}
-          <button className="btn ghost" onClick={() => send('stand')}>{mySeat.inHand && !hand?.over ? 'Leave after this hand' : 'Stand up'}</button>
-        </div>
-      )}
-    </div>
+    <>
+      <div className="dock-left">{handName}</div>
+      <div className="dock-right">
+        {inHand && (
+          <>
+            <button className={`pre ${pre === 'checkfold' ? 'on' : ''}`} aria-pressed={pre === 'checkfold'} onClick={() => setPre(pre === 'checkfold' ? null : 'checkfold')} title="When it's your turn: check if you can, otherwise fold">
+              <span className="tick" aria-hidden="true"><Icon name="check" size={13} /></span>Auto check / fold
+            </button>
+            <button className={`pre ${pre === 'callany' ? 'on' : ''}`} aria-pressed={pre === 'callany'} onClick={() => setPre(pre === 'callany' ? null : 'callany')} title="When it's your turn: call whatever the bet is">
+              <span className="tick" aria-hidden="true"><Icon name="check" size={13} /></span>Auto call any
+            </button>
+          </>
+        )}
+        {!inHand && mySeat && (
+          <>
+            {mySeat.sittingOut
+              ? <button className="btn primary" onClick={() => send('sitout', { value: false })}>I'm back</button>
+              : <button className="btn quiet" onClick={() => send('sitout', { value: true })}>Sit out next hand</button>}
+            <button className="btn quiet" onClick={() => send('stand')}>{mySeat.inHand && !hand?.over ? 'Leave after this hand' : 'Stand up'}</button>
+          </>
+        )}
+      </div>
+    </>
   );
 }

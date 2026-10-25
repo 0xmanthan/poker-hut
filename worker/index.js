@@ -236,6 +236,9 @@ export class TableRoom extends DurableObject {
         case 'pause': return t.pause(uid);
         case 'end': return t.endSession(uid);
         case 'forceFold': return t.forceFold(uid);
+        case 'deal': return t.dealNext(uid);
+        case 'rabbit': return t.rabbitHunt(uid);
+        case 'rit': return t.voteRunItTwice(uid, !!msg.yes);
         case 'removeFromSeat': return t.removeFromSeat(uid, msg.uid);
         case 'history': return this.send(session, { type: 'history', hands: t.revealedHistory() });
         case 'chat': {

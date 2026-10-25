@@ -330,3 +330,126 @@ test('ending the session reports the final bill sheet once', () => {
   t.endSession('h');
   assert.deepEqual(ended, [1]);
 });
+
+test('dealer pace scales the pauses', () => {
+  const fast = makeTable({ settings: { pace: 'fast' } }).t;
+  const slow = makeTable({ settings: { pace: 'relaxed' } }).t;
+  const normal = makeTable().t;
+  assert.ok(fast.wait('street') < normal.wait('street') && normal.wait('street') < slow.wait('street'));
+  assert.equal(makeTable({ settings: { pace: 'warp' } }).t.settings.pace, 'normal', 'unknown pace falls back');
+});
+
+test('manual dealing: the result stays up until the host deals', () => {
+  const { t, settle, flush } = makeTable({ players: 3, settings: { autoDeal: false } });
+  t.start('p0');
+  settle();
+  assert.equal(t.hand.no, 1, 'Start deals the first hand');
+  t.act('p0', { type: 'fold' });
+  t.act('p1', { type: 'fold' });
+  flush();
+  assert.ok(t.hand.over, 'finished hand is still on the table');
+  assert.equal(t.viewFor('p1').awaitingDeal, true);
+  assert.throws(() => t.dealNext('p1'), /host/);
+  t.dealNext('p0');
+  flush(1);
+  assert.equal(t.hand.no, 2);
+  assert.equal(t.hand.over, false);
+  assert.equal(t.viewFor('p1').awaitingDeal, false);
+});
+
+test('turning auto-deal back on deals the waiting hand', () => {
+  const { t, settle, flush } = makeTable({ players: 2, settings: { autoDeal: false } });
+  t.start('p0');
+  settle();
+  t.act('p0', { type: 'fold' });
+  t.updateSettings('p0', { autoDeal: true });
+  flush(2);
+  assert.equal(t.hand.no, 2);
+});
+
+test('rabbit hunt shows the next cards off the deck, burns included', () => {
+  const { t, settle } = makeTable({ players: 3 });
+  t.start('p0');
+  settle();
+  t.act('p0', { type: 'fold' });
+  t.act('p1', { type: 'fold' });
+  const h = t.hand;
+  assert.equal(t.viewFor('p2').hand.canRabbit, true);
+  t.rabbitHunt('p1');
+  const p = h.pos; // after the hole cards
+  assert.deepEqual(h.rabbit, [h.deck[p + 1], h.deck[p + 2], h.deck[p + 3], h.deck[p + 5], h.deck[p + 7]]);
+  assert.equal(totalChips(t), 3000, 'rabbit cards change nothing');
+  const off = makeTable({ players: 2, settings: { rabbitHunt: false } });
+  off.t.start('p0');
+  off.settle();
+  off.t.act('p0', { type: 'fold' });
+  assert.throws(() => off.t.rabbitHunt('p1'), /off/);
+});
+
+function allInPreflop(settings = {}) {
+  const m = makeTable({ players: 2, settings });
+  m.t.start('p0');
+  m.settle();
+  m.t.act('p0', { type: 'allin' });
+  m.t.act('p1', { type: 'call' });
+  return m;
+}
+
+test('run it twice: everyone agrees, two boards from one deck, pot split by run', () => {
+  const { t, finishHand } = allInPreflop();
+  const h = t.hand;
+  assert.ok(h.rit && !h.rit.decided, 'players are asked');
+  assert.throws(() => t.voteRunItTwice('p9', true));
+  t.voteRunItTwice('p0', true);
+  assert.equal(h.rit.decided, false, 'waits for everyone');
+  t.voteRunItTwice('p1', true);
+  assert.equal(h.runs, 2);
+  finishHand();
+  assert.equal(h.board.length, 5);
+  assert.equal(h.board2.length, 5);
+  // second run continues from the same deck after the first: burn, 3, burn, 1, burn, 1
+  const p = 4 + 8;
+  assert.deepEqual(h.board2, [h.deck[p + 1], h.deck[p + 2], h.deck[p + 3], h.deck[p + 5], h.deck[p + 7]]);
+  const runs = h.result.runs;
+  assert.equal(runs.length, 2);
+  const perRun = runs.map((r) => r.winners.reduce((a, w) => a + w.amount, 0));
+  assert.deepEqual(perRun, [1000, 1000], 'each run plays for half the pot');
+  assert.equal(totalChips(t), 2000);
+  assert.deepEqual(t.history.at(-1).board2, h.board2, 'second board recorded for verification');
+});
+
+test('run it twice: one "no" vetoes, and no answer counts as no', () => {
+  const a = allInPreflop();
+  a.t.voteRunItTwice('p0', true);
+  a.t.voteRunItTwice('p1', false);
+  assert.equal(a.t.hand.runs, 1);
+  a.finishHand();
+  assert.equal(a.t.hand.board2, null);
+  assert.equal(totalChips(a.t), 2000);
+
+  const b = allInPreflop();
+  b.finishHand(); // the vote timer fires first
+  assert.equal(b.t.hand.runs, 1);
+  assert.equal(b.t.hand.board2, null);
+
+  const c = allInPreflop({ runItTwice: false });
+  assert.equal(c.t.hand.rit, null, 'not offered when the host turned it off');
+});
+
+test('run it twice after the flop keeps the flop on both boards', () => {
+  const { t, settle, finishHand } = makeTable({ players: 2 });
+  t.start('p0');
+  settle();
+  t.act('p0', { type: 'call' });
+  t.act('p1', { type: 'check' });
+  settle();
+  t.act('p1', { type: 'allin' });
+  t.act('p0', { type: 'call' });
+  t.voteRunItTwice('p0', true);
+  t.voteRunItTwice('p1', true);
+  finishHand();
+  const h = t.hand;
+  assert.deepEqual(h.board2.slice(0, 3), h.board.slice(0, 3));
+  assert.notDeepEqual(h.board2.slice(3), h.board.slice(3));
+  assert.equal(totalChips(t), 2000);
+});

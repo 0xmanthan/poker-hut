@@ -1,25 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Avatar from './Avatar.jsx';
 import Card from './Card.jsx';
+import Icon from './Icons.jsx';
 import { chips, money, witness, verifyHand } from '../lib.js';
 
-export default function SidePanel({ tab, setTab, state, send, chat, history, code, onClose }) {
+const TITLES = { bill: 'Bill sheet', chat: 'Chat', log: 'Hand log', fair: 'Fairness', host: 'Host controls' };
+
+export default function SidePanel({ tab, state, send, chat, history, code, onClose }) {
   const isHost = state.me?.isHost;
-  const tabs = [
-    ['bill', 'Bill sheet'],
-    ['chat', 'Chat'],
-    ['log', 'Hand log'],
-    ['fair', 'Fairness'],
-    ...(isHost ? [['host', `Host${state.requests.length ? ` (${state.requests.length})` : ''}`]] : []),
-  ];
   return (
-    <aside className="side" aria-label="Table panel">
-      <div className="side-tabs" role="tablist">
-        {tabs.map(([id, label]) => (
-          <button key={id} role="tab" aria-selected={tab === id} className={`tab ${tab === id ? 'on' : ''} ${id === 'host' && state.requests.length ? 'alert' : ''}`} onClick={() => setTab(id)}>{label}</button>
-        ))}
-        <button className="side-close" onClick={onClose} aria-label="Close panel">×</button>
-      </div>
+    <aside className="side" aria-label={TITLES[tab]}>
+      <header className="side-head">
+        <h2>{TITLES[tab]}</h2>
+        <button className="icon-btn" onClick={onClose} aria-label="Close panel"><Icon name="close" /></button>
+      </header>
       <div className="side-body">
         {tab === 'bill' && <BillSheet state={state} send={send} />}
         {tab === 'chat' && <Chat chat={chat} send={send} me={state.me?.uid} />}
@@ -226,6 +220,7 @@ function Fairness({ state, send, history, code }) {
               </div>
               <code title="Fingerprint">{h.commitment.slice(0, 32)}…</code>
               {h.board?.length > 0 && <div className="mini-board">{h.board.map((c) => <Card key={c} card={c} size="xs" />)}</div>}
+              {h.board2 && <div className="mini-board">{h.board2.map((c) => <Card key={c} card={c} size="xs" />)}</div>}
               {r && !r.ok && <ul className="checks">{r.checks.filter((c) => !c.ok).map((c, i) => <li key={i}>{c.label}</li>)}</ul>}
               {seen[h.no]?.commitment && seen[h.no].commitment !== h.commitment && <p className="bad">Fingerprint differs from what you saw live.</p>}
             </li>
@@ -236,9 +231,12 @@ function Fairness({ state, send, history, code }) {
   );
 }
 
+const TIMERS = [[15, '15s'], [30, '30s'], [45, '45s'], [60, '60s'], [0, 'Off']];
+
 function HostPanel({ state, send }) {
   const s = state.settings;
   const [form, setForm] = useState(s);
+  const [mode, setMode] = useState('house'); // house | loan
   const [give, setGive] = useState({ uid: '', amount: String(s.defaultBuyIn) });
   const [tr, setTr] = useState({ from: '', to: '', amount: '' });
   const [confirmEnd, setConfirmEnd] = useState(false);
@@ -247,94 +245,144 @@ function HostPanel({ state, send }) {
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
   const players = state.players;
   const handLive = state.hand && !state.hand.over;
+  const numeric = ['smallBlind', 'bigBlind', 'tokenValue', 'defaultBuyIn', 'turnSeconds'];
+  const flags = ['autoApproveBuyIns', 'autoDeal', 'rabbitHunt', 'runItTwice'];
+  const dirty = numeric.some((k) => Number(form[k]) !== Number(s[k])) || flags.some((k) => form[k] !== s[k]) || form.pace !== s.pace;
+  const save = (e) => {
+    e.preventDefault();
+    send('settings', { patch: { ...form, ...Object.fromEntries(numeric.map((k) => [k, Number(form[k])])) } });
+  };
+  const timerOptions = TIMERS.some(([v]) => v === Number(form.turnSeconds)) ? TIMERS : [[Number(form.turnSeconds), `${form.turnSeconds}s`], ...TIMERS];
 
   return (
     <div className="hostp">
-      <section>
-        <h3>Buy-in requests</h3>
-        {state.requests.length === 0 && <p className="empty">No one is waiting.</p>}
-        {state.requests.map((r) => (
-          <div key={r.id} className="request">
-            <span><strong>{r.name}</strong> wants</span>
-            <input type="number" min="1" value={edits[r.id] ?? r.amount} onChange={(e) => setEdits({ ...edits, [r.id]: e.target.value })} aria-label={`Chips for ${r.name}`} />
-            <button className="btn primary sm" onClick={() => send('resolve', { id: r.id, approve: true, amount: Number(edits[r.id] ?? r.amount) })}>Approve</button>
-            <button className="btn ghost sm" onClick={() => send('resolve', { id: r.id, approve: false })}>Decline</button>
+      {state.requests.length > 0 && (
+        <section className="box attention">
+          <h3>Waiting for chips <span className="count">{state.requests.length}</span></h3>
+          {state.requests.map((r) => (
+            <div key={r.id} className="request">
+              <strong>{r.name}</strong>
+              <input type="number" min="1" value={edits[r.id] ?? r.amount} onChange={(e) => setEdits({ ...edits, [r.id]: e.target.value })} aria-label={`Chips for ${r.name}`} />
+              <button className="btn primary sm" onClick={() => send('resolve', { id: r.id, approve: true, amount: Number(edits[r.id] ?? r.amount) })}>Approve</button>
+              <button className="icon-btn" onClick={() => send('resolve', { id: r.id, approve: false })} aria-label={`Decline ${r.name}`} title="Decline"><Icon name="close" size={18} /></button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <section className="box">
+        <div className="box-head">
+          <h3>Chips</h3>
+          <div className="seg" role="tablist" aria-label="Chip action">
+            <button role="tab" aria-selected={mode === 'house'} className={mode === 'house' ? 'on' : ''} onClick={() => setMode('house')}>From house</button>
+            <button role="tab" aria-selected={mode === 'loan'} className={mode === 'loan' ? 'on' : ''} onClick={() => setMode('loan')}>Loan</button>
           </div>
-        ))}
-      </section>
-
-      <section>
-        <h3>Give chips from the house</h3>
-        <div className="row">
-          <select value={give.uid} onChange={(e) => setGive({ ...give, uid: e.target.value })} aria-label="Player">
-            <option value="">Choose player</option>
-            {players.map((p) => <option key={p.uid} value={p.uid}>{p.name}</option>)}
-          </select>
-          <input type="number" min="1" value={give.amount} onChange={(e) => setGive({ ...give, amount: e.target.value })} aria-label="Chips" />
-          <button className="btn" disabled={!give.uid} onClick={() => send('hostBuyIn', { uid: give.uid, amount: Number(give.amount) })}>Give</button>
         </div>
+        {mode === 'house' ? (
+          <form className="chip-form" onSubmit={(e) => { e.preventDefault(); send('hostBuyIn', { uid: give.uid, amount: Number(give.amount) }); }}>
+            <select value={give.uid} onChange={(e) => setGive({ ...give, uid: e.target.value })} aria-label="Player">
+              <option value="">Player…</option>
+              {players.map((p) => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+            </select>
+            <input type="number" min="1" value={give.amount} onChange={(e) => setGive({ ...give, amount: e.target.value })} aria-label="Chips" />
+            <button className="btn primary" disabled={!give.uid || !(Number(give.amount) > 0)}>Give</button>
+            <p className="hint">Counts as a buy-in on the bill sheet.</p>
+          </form>
+        ) : (
+          <form className="chip-form" onSubmit={(e) => { e.preventDefault(); send('transfer', { from: tr.from, to: tr.to, amount: Number(tr.amount) }); setTr({ from: '', to: '', amount: '' }); }}>
+            <select value={tr.from} onChange={(e) => setTr({ ...tr, from: e.target.value })} aria-label="Lender">
+              <option value="">Lender…</option>
+              {players.map((p) => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+            </select>
+            <select value={tr.to} onChange={(e) => setTr({ ...tr, to: e.target.value })} aria-label="Borrower">
+              <option value="">Borrower…</option>
+              {players.filter((p) => p.uid !== tr.from).map((p) => <option key={p.uid} value={p.uid}>{p.name}</option>)}
+            </select>
+            <input type="number" min="1" value={tr.amount} onChange={(e) => setTr({ ...tr, amount: e.target.value })} placeholder="Chips" aria-label="Chips" />
+            <button className="btn primary" disabled={!tr.from || !tr.to || !(Number(tr.amount) > 0)}>Record</button>
+            <p className="hint">Moves chips between stacks. The borrower owes the lender.</p>
+          </form>
+        )}
       </section>
 
-      <section>
-        <h3>Record a loan between players</h3>
-        <div className="row wrap">
-          <select value={tr.from} onChange={(e) => setTr({ ...tr, from: e.target.value })} aria-label="From">
-            <option value="">From</option>
-            {players.map((p) => <option key={p.uid} value={p.uid}>{p.name}</option>)}
-          </select>
-          <select value={tr.to} onChange={(e) => setTr({ ...tr, to: e.target.value })} aria-label="To">
-            <option value="">To</option>
-            {players.filter((p) => p.uid !== tr.from).map((p) => <option key={p.uid} value={p.uid}>{p.name}</option>)}
-          </select>
-          <input type="number" min="1" value={tr.amount} onChange={(e) => setTr({ ...tr, amount: e.target.value })} placeholder="Chips" aria-label="Chips" />
-          <button className="btn" disabled={!tr.from || !tr.to || !(Number(tr.amount) > 0)} onClick={() => { send('transfer', { from: tr.from, to: tr.to, amount: Number(tr.amount) }); setTr({ from: '', to: '', amount: '' }); }}>Record</button>
-        </div>
-      </section>
-
-      <section>
-        <h3>Table settings</h3>
-        <form className="settings" onSubmit={(e) => {
-          e.preventDefault();
-          send('settings', { patch: { ...form, smallBlind: Number(form.smallBlind), bigBlind: Number(form.bigBlind), tokenValue: Number(form.tokenValue), defaultBuyIn: Number(form.defaultBuyIn), turnSeconds: Number(form.turnSeconds) } });
-        }}>
-          <label className="field"><span>Small blind</span><input type="number" min="1" value={form.smallBlind} onChange={set('smallBlind')} /></label>
-          <label className="field"><span>Big blind</span><input type="number" min="2" value={form.bigBlind} onChange={set('bigBlind')} /></label>
-          <label className="field"><span>Chip value ({form.currency})</span><input type="number" min="0.01" step="0.01" value={form.tokenValue} onChange={set('tokenValue')} /></label>
+      <section className="box">
+        <h3>Game</h3>
+        <form className="settings" onSubmit={save}>
+          <label className="field"><span>Blinds</span>
+            <span className="pair">
+              <input type="number" min="1" value={form.smallBlind} onChange={set('smallBlind')} aria-label="Small blind" />
+              <i>/</i>
+              <input type="number" min="2" value={form.bigBlind} onChange={set('bigBlind')} aria-label="Big blind" />
+            </span>
+          </label>
           <label className="field"><span>Usual buy-in</span><input type="number" min="1" value={form.defaultBuyIn} onChange={set('defaultBuyIn')} /></label>
-          <label className="field"><span>Seconds to act (0 = no limit)</span><input type="number" min="0" max="300" value={form.turnSeconds} onChange={set('turnSeconds')} /></label>
-          <label className="check"><input type="checkbox" checked={form.autoApproveBuyIns} onChange={set('autoApproveBuyIns')} /><span>Approve buy-ins automatically</span></label>
-          <button className="btn">Save settings</button>
-          <p className="muted small">New blinds apply from the next hand.</p>
+          <label className="field"><span>1 chip = {form.currency}</span><input type="number" min="0.01" step="0.01" value={form.tokenValue} onChange={set('tokenValue')} /></label>
+          <label className="field"><span>Turn timer</span>
+            <select value={form.turnSeconds} onChange={set('turnSeconds')}>
+              {timerOptions.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <div className="field full"><span>Dealer speed</span>
+            <div className="seg wide" role="radiogroup" aria-label="Dealer speed">
+              {[['relaxed', 'Relaxed'], ['normal', 'Normal'], ['fast', 'Fast']].map(([v, l]) => (
+                <button type="button" key={v} role="radio" aria-checked={form.pace === v} className={form.pace === v ? 'on' : ''} onClick={() => setForm({ ...form, pace: v })}>{l}</button>
+              ))}
+            </div>
+          </div>
+          <Switch checked={form.autoDeal} onChange={set('autoDeal')} label="Deal the next hand automatically" note="Off: you press Deal for every hand." />
+          <Switch checked={form.runItTwice} onChange={set('runItTwice')} label="Offer run it twice" note="On an all-in, everyone in the pot votes. One no means once." />
+          <Switch checked={form.rabbitHunt} onChange={set('rabbitHunt')} label="Allow rabbit hunting" note="After a fold, anyone can see the cards that would have come." />
+          <Switch checked={form.autoApproveBuyIns} onChange={set('autoApproveBuyIns')} label="Approve buy-ins automatically" />
+          {dirty && (
+            <div className="save-row">
+              <button className="btn primary">Save</button>
+              <button type="button" className="btn quiet" onClick={() => setForm(s)}>Undo</button>
+              <span className="hint">Changes apply from the next hand.</span>
+            </div>
+          )}
         </form>
       </section>
 
-      <section>
-        <h3>Seats</h3>
-        <p className="muted small">Free up a seat if someone left. Their chips stay with them on the bill sheet.</p>
-        {players.filter((p) => p.seat !== null).map((p) => (
-          <div key={p.uid} className="seat-row">
-            <span>{p.name}{!p.connected && <em className="muted"> offline</em>}</span>
-            <span className="muted">{chips(p.stack)}</span>
-            {p.uid !== state.me.uid && <button className="btn ghost sm" onClick={() => send('removeFromSeat', { uid: p.uid })}>Stand them up</button>}
-          </div>
-        ))}
+      <section className="box">
+        <h3>Players</h3>
+        <ul className="seat-list">
+          {players.filter((p) => p.seat !== null).map((p) => (
+            <li key={p.uid}>
+              <Avatar name={p.name} src={p.avatar} size={26} />
+              <span className="sl-name">{p.name}{!p.connected && <em> · offline</em>}</span>
+              <span className="sl-stack">{chips(p.stack)}</span>
+              {p.uid !== state.me.uid
+                ? <button className="icon-btn" onClick={() => send('removeFromSeat', { uid: p.uid })} aria-label={`Stand ${p.name} up`} title="Stand up (chips stay on the sheet)"><Icon name="trash" size={17} /></button>
+                : <span className="sl-you">you</span>}
+            </li>
+          ))}
+        </ul>
+        {handLive && state.hand.toAct && <button className="btn quiet sm" onClick={() => send('forceFold')}>Fold the player who's thinking</button>}
       </section>
 
-      <section>
-        <h3>Session</h3>
-        <div className="row wrap">
-          {handLive && state.hand.toAct && <button className="btn ghost" onClick={() => send('forceFold')}>Skip the player who's thinking</button>}
-          {!confirmEnd ? (
-            <button className="btn danger" disabled={state.status === 'ended'} onClick={() => setConfirmEnd(true)}>End session</button>
-          ) : (
-            <div className="confirm">
-              <p>End the session for everyone? No more hands can be dealt. The bill sheet stays, and seeds are revealed for verification.</p>
-              <button className="btn danger" onClick={() => { send('end'); setConfirmEnd(false); }}>{handLive ? 'End after this hand' : 'End session'}</button>
-              <button className="btn ghost" onClick={() => setConfirmEnd(false)}>Keep playing</button>
+      <section className="box danger-zone">
+        {!confirmEnd ? (
+          <button className="btn danger" disabled={state.status === 'ended'} onClick={() => setConfirmEnd(true)}>End session</button>
+        ) : (
+          <div className="confirm">
+            <p>End the session for everyone? No more hands. The bill sheet stays and seeds are revealed for checking.</p>
+            <div className="row">
+              <button className="btn danger" onClick={() => { send('end'); setConfirmEnd(false); }}>{handLive ? 'End after this hand' : 'End now'}</button>
+              <button className="btn quiet" onClick={() => setConfirmEnd(false)}>Keep playing</button>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </section>
     </div>
+  );
+}
+
+function Switch({ checked, onChange, label, note }) {
+  return (
+    <label className="switch">
+      <input type="checkbox" checked={!!checked} onChange={onChange} />
+      <span className="track" aria-hidden="true" />
+      <span>{label}{note && <small>{note}</small>}</span>
+    </label>
   );
 }

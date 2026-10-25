@@ -70,28 +70,43 @@ export const sound = {
       const t = ctx.currentTime;
       const g = ctx.createGain();
       g.connect(ctx.destination);
-      if (kind === 'card') {
-        // short filtered noise: a card sliding on felt
-        const len = 0.07;
-        const buf = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate);
+      // short shaped noise burst through a filter
+      const noise = (at, len, type, freq, q, gain) => {
+        const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * len), ctx.sampleRate);
         const d = buf.getChannelData(0);
-        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 2;
+        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 3;
         const src = ctx.createBufferSource();
         src.buffer = buf;
         const f = ctx.createBiquadFilter();
-        f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.8;
-        src.connect(f); f.connect(g);
-        g.gain.value = 0.35;
-        src.start(t);
+        f.type = type; f.frequency.value = freq; f.Q.value = q;
+        const ng = ctx.createGain();
+        ng.gain.value = gain;
+        src.connect(f); f.connect(ng); ng.connect(ctx.destination);
+        src.start(at);
+      };
+      const tone = (at, freq, to, len, gain, type = 'sine') => {
+        const o = ctx.createOscillator(), og = ctx.createGain();
+        o.type = type;
+        o.frequency.setValueAtTime(freq, at);
+        if (to) o.frequency.exponentialRampToValueAtTime(to, at + len);
+        og.gain.setValueAtTime(0.0001, at);
+        og.gain.exponentialRampToValueAtTime(gain, at + 0.004);
+        og.gain.exponentialRampToValueAtTime(0.0001, at + len);
+        o.connect(og); og.connect(ctx.destination);
+        o.start(at); o.stop(at + len + 0.02);
+      };
+      if (kind === 'card') {
+        // a clean flick: brief, bright, quiet
+        noise(t, 0.035, 'highpass', 3200, 0.7, 0.16);
       } else if (kind === 'chip') {
-        for (const [dt, freq] of [[0, 3100], [0.045, 2600]]) {
-          const o = ctx.createOscillator(), og = ctx.createGain();
-          o.type = 'triangle'; o.frequency.value = freq;
-          og.gain.setValueAtTime(0.0001, t + dt);
-          og.gain.exponentialRampToValueAtTime(0.18, t + dt + 0.004);
-          og.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.08);
-          o.connect(og); og.connect(ctx.destination);
-          o.start(t + dt); o.stop(t + dt + 0.1);
+        // one small coin clink: two inharmonic partials, a hair apart
+        tone(t, 4200, 0, 0.07, 0.035);
+        tone(t + 0.028, 6100, 0, 0.05, 0.022);
+      } else if (kind === 'check') {
+        // two soft knocks on the table
+        for (const dt of [0, 0.12]) {
+          tone(t + dt, 150, 70, 0.11, 0.2);
+          noise(t + dt, 0.03, 'lowpass', 500, 0.7, 0.12);
         }
       } else if (kind === 'turn') {
         const o = ctx.createOscillator();
@@ -182,6 +197,14 @@ export async function verifyHand(rec, seen, myUid) {
   p++; full.push(deck[p++]);
   const board = full.slice(0, rec.board.length);
   checks.push({ label: 'Board came off the top of that deck', ok: JSON.stringify(board) === JSON.stringify(rec.board) });
+  if (rec.board2) {
+    // run it twice: the second board keeps the shared cards, then continues from the same deck
+    let shared = 0;
+    while (shared < 5 && rec.board2[shared] === rec.board[shared]) shared++;
+    const second = rec.board2.slice(0, shared);
+    while (second.length < 5) { p++; const n = second.length === 0 ? 3 : 1; for (let i = 0; i < n; i++) second.push(deck[p++]); }
+    checks.push({ label: 'Second run came off the same deck', ok: JSON.stringify(second) === JSON.stringify(rec.board2) });
+  }
   for (const [uid, cards] of Object.entries(rec.shown ?? {})) {
     checks.push({ label: 'Shown hand matches the deck', ok: JSON.stringify(holes[uid]) === JSON.stringify(cards) });
   }
