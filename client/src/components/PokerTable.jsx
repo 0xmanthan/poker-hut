@@ -241,9 +241,7 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
               {(hand?.canRabbit || state.awaitingDeal) && (
                 <div className="after-hand">
                   {hand?.canRabbit && <button className="felt-btn" onClick={() => send('rabbit')}>Show what was coming</button>}
-                  {state.awaitingDeal && (state.me?.isHost
-                    ? <button className="felt-btn primary" onClick={() => send('deal')}>Deal next hand</button>
-                    : <span className="felt-note">Waiting for the host to deal</span>)}
+                  {state.awaitingDeal && state.seats.filter((x) => !x.empty && x.stack > 0 && !x.sittingOut).length >= 2 && <span className="felt-note">{state.me?.isHost ? 'Press Enter to deal the next hand' : 'Waiting for the host to deal'}</span>}
                 </div>
               )}
               {!hand && state.status !== 'running' && <div className="center-note">{centerNote(state)}</div>}
@@ -352,10 +350,10 @@ function SeatPopover({ at, cx, cy, seat, state, onClose, onSit }) {
   const approve = state.settings.autoApproveBuyIns || me.isHost;
   useEffect(() => {
     const off = (e) => { if (!ref.current?.contains(e.target) && !e.target.closest?.('.seat-empty')) onClose(); };
-    const esc = (e) => { if (e.key === 'Escape') onClose(); };
+    const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose(); } };
     document.addEventListener('pointerdown', off);
-    window.addEventListener('keydown', esc);
-    return () => { document.removeEventListener('pointerdown', off); window.removeEventListener('keydown', esc); };
+    window.addEventListener('keydown', esc, true);
+    return () => { document.removeEventListener('pointerdown', off); window.removeEventListener('keydown', esc, true); };
   }, [onClose]);
   // open toward the middle of the table so it never hangs off the edge
   const below = at.y < cy;

@@ -4,7 +4,7 @@ import Icon from './Icons.jsx';
 
 // Lives in the fixed-height dock under the table. Its height never changes with
 // whose turn it is, so the table doesn't resize; bet sizing pops up over the felt.
-export default function ActionBar({ state, send, errorTick }) {
+export default function ActionBar({ state, send, errorTick, deal }) {
   const me = state.me;
   const hand = state.hand;
   const opt = me?.options;
@@ -72,12 +72,18 @@ export default function ActionBar({ state, send, errorTick }) {
   };
 
   useEffect(() => { if (sizing) inputRef.current?.select(); }, [sizing]);
+  // Escape closes the raise sizer before anything else
+  useEffect(() => {
+    if (!sizing) return;
+    const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); setSizing(false); } };
+    window.addEventListener('keydown', esc, true);
+    return () => window.removeEventListener('keydown', esc, true);
+  }, [sizing]);
 
   useEffect(() => {
     if (!opt || pending === decision) return;
     const onKey = (e) => {
       if (e.metaKey || e.ctrlKey) return;
-      if (e.key === 'Escape') { setSizing(false); return; }
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
       const k = e.key.toLowerCase();
       // F fold, K check, C call (checks when there's nothing to call), R raise
@@ -153,6 +159,7 @@ export default function ActionBar({ state, send, errorTick }) {
     <>
       <div className="dock-left">{handName}</div>
       <div className="dock-right">
+        {deal}
         {inHand && !opt && (
           <>
             <button className={`pre ${pre === 'checkfold' ? 'on' : ''}`} aria-pressed={pre === 'checkfold'} onClick={() => setPre(pre === 'checkfold' ? null : 'checkfold')} title="When it's your turn: check if you can, otherwise fold">

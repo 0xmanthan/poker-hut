@@ -61,6 +61,31 @@ export default function TableScreen({ code, user, onLeave }) {
   const [errorTick, setErrorTick] = useState(0);
   useEffect(() => { if (toast) setErrorTick((n) => n + 1); }, [toast]);
 
+  // host keys: Enter deals the next hand (manual dealing) or starts / resumes the game
+  const isHost = !!state?.me?.isHost;
+  // manual dealing: only offer a deal once two players can actually play
+  const awaitingDeal = !!state?.awaitingDeal && (state?.seats ?? []).filter((x) => !x.empty && x.stack > 0 && !x.sittingOut).length >= 2;
+  const canStart = isHost && (state?.status === 'waiting' || state?.status === 'paused');
+  useEffect(() => {
+    if (!isHost) return;
+    const onKey = (e) => {
+      if (e.key !== 'Enter' || e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      if (e.target.closest?.('input, textarea, select, button, a, [contenteditable]')) return;
+      if (awaitingDeal) { e.preventDefault(); send('deal'); }
+      else if (canStart) { e.preventDefault(); send('start'); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isHost, awaitingDeal, canStart, send]);
+
+  // Escape closes the open sheet (popovers inside it close first, they handle Escape earlier)
+  useEffect(() => {
+    if (!panel) return;
+    const onKey = (e) => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); setPanel(null); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [panel]);
+
   if (status === 'gone') {
     return (
       <main className="gone">
@@ -151,6 +176,19 @@ export default function TableScreen({ code, user, onLeave }) {
           <PokerTable state={state} serverNow={serverNow} onSit={(seat, buyIn) => send('sit', { seat, buyIn })} send={send} portrait={portrait} />
           {hostWaiting && <HostRequests requests={state.requests} send={send} />}
           <footer className="dock">
+            {me?.isHost && state.status !== 'ended' && (
+              <div className="host-strip" role="group" aria-label="Dealing">
+                <label className="mini-switch" title="On: each hand starts by itself. Off: you deal every hand (Enter).">
+                  <input type="checkbox" checked={state.settings.autoDeal} onChange={(e) => send('settings', { patch: { autoDeal: e.target.checked } })} />
+                  <span className="track" aria-hidden="true" />
+                  <span>Auto deal</span>
+                </label>
+                {state.status === 'running'
+                  ? <button className="mini-btn" onClick={() => send('pause')} title="Stops before the next hand">{state.hand && !state.hand.over ? 'Pause after hand' : 'Pause'}</button>
+                  : <button className="mini-btn on" onClick={() => send('start')}>{state.status === 'paused' ? 'Resume' : 'Start game'}<kbd>Enter</kbd></button>}
+                <EndTable send={send} handLive={!!(state.hand && !state.hand.over)} />
+              </div>
+            )}
             {needsChips ? (
               <>
                 <div className="dock-left"><span className="handname">Out of chips</span></div>
@@ -173,9 +211,11 @@ export default function TableScreen({ code, user, onLeave }) {
                 )}
               </>
             ) : me?.seat === null ? (
-              state.status !== 'ended' && <p className="dock-note">You're watching. Tap an empty seat to sit down.</p>
+              state.status !== 'ended' && (awaitingDeal && isHost
+                ? <div className="dock-right"><DealButton send={send} /></div>
+                : <p className="dock-note">You're watching. Tap an empty seat to sit down.</p>)
             ) : (
-              <ActionBar state={state} send={send} errorTick={errorTick} />
+              <ActionBar state={state} send={send} errorTick={errorTick} deal={awaitingDeal && isHost ? <DealButton send={send} /> : null} />
             )}
           </footer>
         </div>
@@ -189,14 +229,40 @@ export default function TableScreen({ code, user, onLeave }) {
   );
 }
 
+// ends the session for everyone, after one confirm (Escape or Cancel backs out)
+function EndTable({ send, handLive }) {
+  const [sure, setSure] = useState(false);
+  useEffect(() => {
+    if (!sure) return;
+    const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); setSure(false); } };
+    const t = setTimeout(() => setSure(false), 8000);
+    window.addEventListener('keydown', esc, true);
+    return () => { window.removeEventListener('keydown', esc, true); clearTimeout(t); };
+  }, [sure]);
+  if (!sure) return <button className="mini-btn quiet-danger" onClick={() => setSure(true)}>End table</button>;
+  return (
+    <span className="end-confirm" role="group" aria-label="End the table?">
+      <span>End for everyone?</span>
+      <button className="mini-btn danger" onClick={() => { send('end'); setSure(false); }}>{handLive ? 'End after this hand' : 'Yes, end'}</button>
+      <button className="mini-btn" onClick={() => setSure(false)}>Cancel</button>
+    </span>
+  );
+}
+
+function DealButton({ send }) {
+  return <button className="act raise deal" onClick={() => send('deal')}>Deal next hand<kbd>Enter</kbd></button>;
+}
+
 function ThemePicker({ current, onPick }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
     if (!open) return;
     const off = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); setOpen(false); } };
     document.addEventListener('pointerdown', off);
-    return () => document.removeEventListener('pointerdown', off);
+    window.addEventListener('keydown', esc, true);
+    return () => { document.removeEventListener('pointerdown', off); window.removeEventListener('keydown', esc, true); };
   }, [open]);
   return (
     <div className="theme-pick" ref={ref}>

@@ -87,7 +87,7 @@ export default function Lobby({ user, onOpen, onRenamed }) {
         </nav>
         {renaming ? (
           <form className="who" onSubmit={rename}>
-            <input value={newName} onChange={(e) => setNewName(e.target.value)} maxLength={24} aria-label="Your name" autoFocus />
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') { setRenaming(false); setNewName(user.name); } }} maxLength={24} aria-label="Your name" autoFocus />
             <button className="btn primary sm" disabled={!newName.trim()}>Save</button>
             <button type="button" className="btn ghost sm" onClick={() => { setRenaming(false); setNewName(user.name); }}>Cancel</button>
           </form>
