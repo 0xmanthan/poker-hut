@@ -3,6 +3,7 @@ import Card from './Card.jsx';
 import Avatar from './Avatar.jsx';
 import Chips, { ChipStack } from './Chips.jsx';
 import { chips, sound } from '../lib.js';
+import { BuyInPicker } from './BuyIn.jsx';
 
 function useSize(ref) {
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -16,20 +17,14 @@ function useSize(ref) {
   return size;
 }
 
+// The bar drains with a CSS animation started part-way through, so a turn costs
+// no React work per frame. Keyed by deadline, so each new turn restarts it.
 function TimerBar({ deadline, total, serverNow }) {
-  const [left, setLeft] = useState(1);
-  useEffect(() => {
-    let raf;
-    const tick = () => {
-      setLeft(Math.max(0, (deadline - serverNow()) / (total * 1000)));
-      raf = requestAnimationFrame(tick);
-    };
-    tick();
-    return () => cancelAnimationFrame(raf);
-  }, [deadline, total, serverNow]);
+  const left = Math.max(0, Math.min(total * 1000, deadline - serverNow()));
+  const style = { animationDuration: `${total}s`, animationDelay: `${-(total * 1000 - left)}ms` };
   return (
-    <span className={`timer ${left < 0.25 ? 'low' : ''}`} aria-hidden="true">
-      <span style={{ transform: `scaleX(${left})` }} />
+    <span className="timer" aria-hidden="true">
+      <span style={style} />
     </span>
   );
 }
@@ -77,6 +72,8 @@ function stadium(cx, cy, W, H) {
 
 export default function PokerTable({ state, serverNow, onSit, send, portrait }) {
   const ref = useRef(null);
+  const [sitAt, setSitAt] = useState(null); // empty seat whose popover is open
+  const [collect, setCollect] = useState(null); // bets sliding into the pot
   const { w, h } = useSize(ref);
   const hand = state.hand;
   const N = state.seats.length;
@@ -127,6 +124,14 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
     return out;
   }, [N, pivot, mySeat, cx, cy, fw, fh, rail, s, portrait]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // cup holders on the rail, between the seats (only some themes show them)
+  const cups = useMemo(() => {
+    const at = stadium(cx, cy, fw + rail * 2, fh + rail * 2);
+    const R = Math.min(fw, fh) / 2 + rail, a = Math.abs(fw - fh) / 2;
+    const perimeter = 4 * a + 2 * Math.PI * R;
+    return Array.from({ length: N }, (_, k) => at(((k + 0.5) * perimeter) / N));
+  }, [N, cx, cy, fw, fh, rail]);
+
   // dealing order: left of the button, around the table
   const dealIndex = useMemo(() => {
     if (!hand) return {};
@@ -134,6 +139,25 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
     inHand.sort((a, b) => ((a - hand.buttonSeat - 1 + N) % N) - ((b - hand.buttonSeat - 1 + N) % N));
     return Object.fromEntries(inHand.map((x, i) => [x, { i, n: inHand.length }]));
   }, [hand?.no]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // bets slide into the pot when a betting round ends (or the hand does)
+  const lastBets = useRef(null);
+  const potAt = { x: cx, y: cy - (portrait ? 76 : 93) * s };
+  useLayoutEffect(() => {
+    const prevB = lastBets.current;
+    const now = { no: hand?.no, street: hand?.street, over: !!hand?.result, bets: state.seats.filter((x) => x.bet > 0).map((x) => ({ seat: x.seat, amount: x.bet })) };
+    lastBets.current = now;
+    if (!prevB || !hand || prevB.no !== hand.no || !prevB.bets.length) return;
+    const gone = prevB.bets.filter((b) => !(state.seats[b.seat]?.bet > 0) || now.over || now.street !== prevB.street);
+    if (!gone.length || (!now.over && now.street === prevB.street && gone.length < prevB.bets.length && state.seats.some((x) => x.bet > 0))) return;
+    const id = `${hand.no}-${prevB.street}-${now.over}`;
+    setCollect({ id, items: gone.map((b) => ({ ...b, from: seatsAt[b.seat]?.bet })).filter((b) => b.from) });
+    const t = setTimeout(() => setCollect((c) => (c?.id === id ? null : c)), 520);
+    return () => clearTimeout(t);
+  }, [hand?.no, hand?.street, !!hand?.result, state.seats.map((x) => x.bet).join()]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // the seat popover closes if someone else takes that seat first
+  useEffect(() => { if (sitAt !== null && !state.seats[sitAt]?.empty) setSitAt(null); }, [sitAt, state.seats]);
 
   // sound cues: a soft knock for a check, a quiet clink when chips go in, a flick per card
   const prev = useRef({});
@@ -151,6 +175,7 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
     if (hand && hand.no === p.no) {
       for (const x of state.seats) {
         if (!x.last || x.last === p.lasts?.[x.seat]) continue;
+        if (x.uid === state.me?.uid) continue; // my own actions sound on click, without the round trip
         if (x.last === 'Check') sound.play('check');
         else if (x.last !== 'Fold') sound.play('chip');
       }
@@ -174,6 +199,7 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
             <div className="felt-line" />
             <div className="felt-mark">{state.name}</div>
           </div>
+          {cups.map((p, i) => <i key={i} className="cup" style={{ left: p.x, top: p.y }} aria-hidden="true" />)}
 
           {/* pot, community cards, result */}
           <div className="center" style={{ left: cx, top: cy }}>
@@ -242,7 +268,7 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
             const p = seatsAt[seat.seat];
             if (seat.empty) {
               return (
-                <button key={seat.seat} className={`seat-empty ${canSit ? 'open' : ''}`} style={{ left: p.x, top: p.y }} disabled={!canSit} onClick={() => onSit(seat.seat)} aria-label={`Seat ${seat.seat + 1}${canSit ? ', take this seat' : ', empty'}`}>
+                <button key={seat.seat} className={`seat-empty ${canSit ? 'open' : ''} ${sitAt === seat.seat ? 'picked' : ''}`} style={{ left: p.x, top: p.y }} disabled={!canSit} onClick={() => setSitAt(sitAt === seat.seat ? null : seat.seat)} aria-label={`Seat ${seat.seat + 1}${canSit ? ', take this seat' : ', empty'}`} aria-expanded={sitAt === seat.seat}>
                   {canSit && <span>Sit</span>}
                 </button>
               );
@@ -286,7 +312,7 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
                       <span className="pstack">{seat.allIn ? 'All-in' : chips(seat.stack)}</span>
                     </span>
                     {tag && <span className={`said said-${tag.toLowerCase().replace(/[^a-z]/g, '')}`} key={tag}>{tag}</span>}
-                    {acting && hand.deadline && <TimerBar deadline={hand.deadline} total={state.settings.turnSeconds} serverNow={serverNow} />}
+                    {acting && hand.deadline && <TimerBar key={hand.deadline} deadline={hand.deadline} total={state.settings.turnSeconds} serverNow={serverNow} />}
                   </div>
                 </div>
                 {seat.bet > 0 && !result && (
@@ -298,9 +324,60 @@ export default function PokerTable({ state, serverNow, onSit, send, portrait }) 
               </React.Fragment>
             );
           })}
+
+          {collect && collect.items.map((b) => (
+            <Chips key={`${collect.id}-${b.seat}`} amount={b.amount} className="bet collecting" style={{ left: b.from.x, top: b.from.y, '--dx': `${potAt.x - b.from.x}px`, '--dy': `${potAt.y - b.from.y}px` }} />
+          ))}
+
+          {canSit && sitAt !== null && seatsAt[sitAt] && (
+            <SeatPopover
+              at={seatsAt[sitAt]} cx={cx} cy={cy} seat={sitAt} state={state}
+              onClose={() => setSitAt(null)}
+              onSit={(buyIn) => { onSit(sitAt, buyIn); setSitAt(null); }}
+            />
+          )}
         </>
       )}
     </div>
+  );
+}
+
+// Click an empty seat: pick your chips and sit, in one step.
+function SeatPopover({ at, cx, cy, seat, state, onClose, onSit }) {
+  const me = state.me;
+  const hasChips = me.stack > 0;
+  const [amt, setAmt] = useState(String(state.settings.defaultBuyIn));
+  const ref = useRef(null);
+  const approve = state.settings.autoApproveBuyIns || me.isHost;
+  useEffect(() => {
+    const off = (e) => { if (!ref.current?.contains(e.target) && !e.target.closest?.('.seat-empty')) onClose(); };
+    const esc = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('pointerdown', off);
+    window.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('pointerdown', off); window.removeEventListener('keydown', esc); };
+  }, [onClose]);
+  // open toward the middle of the table so it never hangs off the edge
+  const below = at.y < cy;
+  const side = at.x < cx - 40 ? 'right' : at.x > cx + 40 ? 'left' : 'mid';
+  const valid = hasChips || Number(amt) > 0;
+  return (
+    <form
+      ref={ref}
+      className={`popup seat-pop ${below ? 'below' : 'above'} side-${side}`}
+      style={{ left: at.x, top: at.y }}
+      onSubmit={(e) => { e.preventDefault(); if (valid) onSit(hasChips ? undefined : Math.floor(Number(amt))); }}
+      aria-label={`Sit in seat ${seat + 1}`}
+    >
+      <div className="pop-title">Seat {seat + 1}<span className="muted"> · as {state.players.find((p) => p.uid === me.uid)?.name ?? 'you'}</span></div>
+      {hasChips
+        ? <p className="muted small">You bring your {chips(me.stack)} chips.</p>
+        : <BuyInPicker value={amt} onChange={setAmt} settings={state.settings} autoFocus />}
+      <div className="pop-actions">
+        <button type="button" className="btn quiet" onClick={onClose}>Cancel</button>
+        <button className="btn primary" disabled={!valid}>{hasChips || approve ? 'Take the seat' : 'Sit & ask host'}</button>
+      </div>
+      {!hasChips && !approve && <p className="muted small">The host approves your chips; you're seated right away.</p>}
+    </form>
   );
 }
 

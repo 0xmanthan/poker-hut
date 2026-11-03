@@ -14,6 +14,7 @@ export default function Lobby({ user, onOpen, onRenamed }) {
     currency: '₹',
     turnSeconds: 30,
     autoApproveBuyIns: false,
+    variant: 'nlhe',
   });
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -45,7 +46,7 @@ export default function Lobby({ user, onOpen, onRenamed }) {
     setError(null);
     try {
       const { name, ...rest } = form;
-      const settings = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, typeof v === 'string' && k !== 'currency' ? Number(v) : v]));
+      const settings = Object.fromEntries(Object.entries(rest).map(([k, v]) => [k, typeof v === 'string' && k !== 'currency' && k !== 'variant' ? Number(v) : v]));
       if (!(settings.bigBlind > 0 && settings.smallBlind > 0 && settings.smallBlind <= settings.bigBlind)) throw new Error('Small blind must be at most the big blind.');
       if (!(settings.tokenValue > 0)) throw new Error('Chip value must be more than zero.');
       const { code } = await api('/api/tables', { name, settings });
@@ -102,6 +103,14 @@ export default function Lobby({ user, onOpen, onRenamed }) {
             <span>Table name</span>
             <input value={form.name} onChange={set('name')} maxLength={40} />
           </label>
+
+          <div className="field"><span>Game</span>
+            <div className="seg wide" role="radiogroup" aria-label="Game">
+              {[['nlhe', "No-limit Hold'em"], ['shortdeck', 'Short deck (6+)']].map(([v, l]) => (
+                <button type="button" key={v} role="radio" aria-checked={form.variant === v} className={form.variant === v ? 'on' : ''} onClick={() => setForm({ ...form, variant: v })}>{l}</button>
+              ))}
+            </div>
+          </div>
 
           <div className="field-row">
             <label className="field"><span>Small blind</span><input type="number" min="1" value={form.smallBlind} onChange={set('smallBlind')} /></label>

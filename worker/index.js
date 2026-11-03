@@ -223,7 +223,7 @@ export class TableRoom extends DurableObject {
     try {
       switch (msg.type) {
         case 'ping': return this.send(session, { type: 'pong', t: msg.t, serverNow: Date.now() });
-        case 'sit': return t.sit(uid, msg.seat);
+        case 'sit': return t.sit(uid, msg.seat, msg.buyIn);
         case 'stand': return t.standUp(uid);
         case 'sitout': return t.setSittingOut(uid, !!msg.value);
         case 'act': return t.act(uid, msg.action);

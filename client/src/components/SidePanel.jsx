@@ -3,6 +3,7 @@ import Avatar from './Avatar.jsx';
 import Card from './Card.jsx';
 import Icon from './Icons.jsx';
 import { chips, money, witness, verifyHand } from '../lib.js';
+import { THEMES } from '../theme.js';
 
 const TITLES = { bill: 'Bill sheet', chat: 'Chat', log: 'Hand log', fair: 'Fairness', host: 'Host controls' };
 
@@ -246,8 +247,8 @@ function HostPanel({ state, send }) {
   const players = state.players;
   const handLive = state.hand && !state.hand.over;
   const numeric = ['smallBlind', 'bigBlind', 'tokenValue', 'defaultBuyIn', 'turnSeconds'];
-  const flags = ['autoApproveBuyIns', 'autoDeal', 'rabbitHunt', 'runItTwice'];
-  const dirty = numeric.some((k) => Number(form[k]) !== Number(s[k])) || flags.some((k) => form[k] !== s[k]) || form.pace !== s.pace;
+  const flags = ['autoApproveBuyIns', 'autoDeal', 'rabbitHunt', 'runItTwice', 'tripsBeatStraight'];
+  const dirty = numeric.some((k) => Number(form[k]) !== Number(s[k])) || flags.some((k) => form[k] !== s[k]) || form.pace !== s.pace || form.variant !== s.variant;
   const save = (e) => {
     e.preventDefault();
     send('settings', { patch: { ...form, ...Object.fromEntries(numeric.map((k) => [k, Number(form[k])])) } });
@@ -308,6 +309,19 @@ function HostPanel({ state, send }) {
       <section className="box">
         <h3>Game</h3>
         <form className="settings" onSubmit={save}>
+          <div className="field full"><span>Variant</span>
+            <div className="seg wide" role="radiogroup" aria-label="Variant">
+              {[['nlhe', "No-limit Hold'em"], ['shortdeck', 'Short deck (6+)']].map(([v, l]) => (
+                <button type="button" key={v} role="radio" aria-checked={form.variant === v} className={form.variant === v ? 'on' : ''} onClick={() => setForm({ ...form, variant: v })}>{l}</button>
+              ))}
+            </div>
+          </div>
+          {form.variant === 'shortdeck' && (
+            <>
+              <p className="hint full-row">36 cards, sixes to aces. A flush beats a full house; A-6-7-8-9 is a straight.</p>
+              <Switch checked={form.tripsBeatStraight} onChange={set('tripsBeatStraight')} label="Three of a kind beats a straight" note="Triton rules. Off: a straight beats three of a kind." />
+            </>
+          )}
           <label className="field"><span>Blinds</span>
             <span className="pair">
               <input type="number" min="1" value={form.smallBlind} onChange={set('smallBlind')} aria-label="Small blind" />
@@ -341,6 +355,19 @@ function HostPanel({ state, send }) {
             </div>
           )}
         </form>
+      </section>
+
+      <section className="box">
+        <h3>Table theme</h3>
+        <p className="hint">Everyone at the table sees the theme you pick.</p>
+        <div className="theme-grid" role="radiogroup" aria-label="Table theme">
+          {THEMES.map((t) => (
+            <button key={t.id} type="button" role="radio" aria-checked={s.theme === t.id} className={`theme-tile ${s.theme === t.id ? 'on' : ''}`} onClick={() => send('settings', { patch: { theme: t.id } })}>
+              <span className={`swatch swatch-${t.id}`} aria-hidden="true"><i /><i /><i /></span>
+              <strong>{t.name}</strong>
+            </button>
+          ))}
+        </div>
       </section>
 
       <section className="box">

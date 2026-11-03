@@ -141,8 +141,8 @@ export async function sha256Hex(seedHex) {
   return bytesToHex(await crypto.subtle.digest('SHA-256', hexToBytes(seedHex)));
 }
 
-// Mirrors engine/deck.js exactly.
-export async function deckFromSeed(seedHex) {
+// Mirrors engine/deck.js exactly (36 cards, sixes up, for short deck).
+export async function deckFromSeed(seedHex, variant = 'nlhe') {
   const key = await crypto.subtle.importKey('raw', hexToBytes(seedHex), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const enc = new TextEncoder();
   let block = 0;
@@ -160,8 +160,8 @@ export async function deckFromSeed(seedHex) {
     do v = await nextU32(); while (v >= limit);
     return v % n;
   };
-  const deck = Array.from({ length: 52 }, (_, i) => i);
-  for (let i = 51; i > 0; i--) {
+  const deck = variant === 'shortdeck' ? Array.from({ length: 36 }, (_, i) => i + 16) : Array.from({ length: 52 }, (_, i) => i);
+  for (let i = deck.length - 1; i > 0; i--) {
     const j = await rand(i + 1);
     [deck[i], deck[j]] = [deck[j], deck[i]];
   }
@@ -187,7 +187,7 @@ export async function verifyHand(rec, seen, myUid) {
   const hash = await sha256Hex(rec.seed);
   checks.push({ label: 'Seed matches the fingerprint published before the deal', ok: hash === rec.commitment });
   if (seen?.commitment) checks.push({ label: 'Fingerprint matches what your browser saw live', ok: seen.commitment === rec.commitment });
-  const deck = await deckFromSeed(rec.seed);
+  const deck = await deckFromSeed(rec.seed, rec.variant);
   const n = rec.order.length;
   const holes = Object.fromEntries(rec.order.map((uid, i) => [uid, [deck[i], deck[i + n]]]));
   let p = 2 * n;

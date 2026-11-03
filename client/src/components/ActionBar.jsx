@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { chips } from '../lib.js';
+import { chips, sound } from '../lib.js';
 import Icon from './Icons.jsx';
 
 // Lives in the fixed-height dock under the table. Its height never changes with
 // whose turn it is, so the table doesn't resize; bet sizing pops up over the felt.
-export default function ActionBar({ state, send }) {
+export default function ActionBar({ state, send, errorTick }) {
   const me = state.me;
   const hand = state.hand;
   const opt = me?.options;
@@ -12,6 +12,8 @@ export default function ActionBar({ state, send }) {
   const [sizing, setSizing] = useState(false);
   const [pre, setPre] = useState(null); // 'checkfold' | 'callany'
   const inputRef = useRef(null);
+  // the decision I just answered: buttons go away at once, without waiting for the server
+  const [pending, setPending] = useState(null);
 
   const mySeat = me?.seat !== null && me?.seat !== undefined ? state.seats[me.seat] : null;
   const inHand = !!(hand && !hand.over && mySeat?.inHand && !mySeat.folded && !mySeat.allIn);
@@ -35,18 +37,32 @@ export default function ActionBar({ state, send }) {
 
   useEffect(() => { if (opt?.canRaise) setRaiseTo(opt.minTo); }, [opt?.minTo, opt?.canRaise, hand?.no, hand?.street]);
   useEffect(() => { if (!opt) setSizing(false); }, [opt]);
+  const decision = opt ? `${hand.no}|${hand.street}|${hand.currentBet}|${opt.toCall}|${opt.minTo}|${hand.deadline}` : null;
+  useEffect(() => { setPending(null); }, [errorTick]);
+  useEffect(() => {
+    if (!pending) return;
+    const t = setTimeout(() => setPending(null), 3000); // the server never answered: show the buttons again
+    return () => clearTimeout(t);
+  }, [pending]);
 
   // clear queued pre-actions when a new hand starts
   useEffect(() => { setPre(null); }, [hand?.no]);
   // "check/fold" stays only while there's nothing to call; "call any" holds through raises
   useEffect(() => {
     if (!opt || !pre) return;
-    if (pre === 'checkfold') send('act', { action: { type: opt.canCheck ? 'check' : 'fold' } });
-    if (pre === 'callany') send('act', { action: { type: opt.canCheck ? 'check' : 'call' } });
+    if (pre === 'checkfold') act(opt.canCheck ? 'check' : 'fold');
+    if (pre === 'callany') act(opt.canCheck ? 'check' : 'call');
     setPre(null);
-  }, [opt, pre, send]);
+  }, [opt, pre, send]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const act = (type, extra = {}) => { setSizing(false); send('act', { action: { type, ...extra } }); };
+  function act(type, extra = {}) {
+    if (pending && pending === decision) return; // already answered (double click)
+    setSizing(false);
+    setPending(decision);
+    if (type === 'check' || (type === 'call' && opt?.canCheck)) sound.play('check');
+    else if (type !== 'fold') sound.play('chip');
+    send('act', { action: { type, ...extra } });
+  }
   const onlyAllIn = opt?.canRaise && opt.minTo >= opt.maxTo;
   const valid = opt?.canRaise && Number.isInteger(raiseTo) && raiseTo >= opt.minTo && raiseTo <= opt.maxTo;
   const raise = () => {
@@ -58,7 +74,7 @@ export default function ActionBar({ state, send }) {
   useEffect(() => { if (sizing) inputRef.current?.select(); }, [sizing]);
 
   useEffect(() => {
-    if (!opt) return;
+    if (!opt || pending === decision) return;
     const onKey = (e) => {
       if (e.metaKey || e.ctrlKey) return;
       if (e.key === 'Escape') { setSizing(false); return; }
@@ -92,7 +108,7 @@ export default function ActionBar({ state, send }) {
     );
   }
 
-  if (opt) {
+  if (opt && pending !== decision) {
     const callAllIn = !opt.canCheck && opt.toCall >= mySeat.stack;
     const raiseLabel = onlyAllIn || (sizing && raiseTo >= opt.maxTo) ? 'All-in'
       : opt.isBet ? 'Bet' : 'Raise';
@@ -137,7 +153,7 @@ export default function ActionBar({ state, send }) {
     <>
       <div className="dock-left">{handName}</div>
       <div className="dock-right">
-        {inHand && (
+        {inHand && !opt && (
           <>
             <button className={`pre ${pre === 'checkfold' ? 'on' : ''}`} aria-pressed={pre === 'checkfold'} onClick={() => setPre(pre === 'checkfold' ? null : 'checkfold')} title="When it's your turn: check if you can, otherwise fold">
               <span className="tick" aria-hidden="true"><Icon name="check" size={13} /></span>Auto check / fold

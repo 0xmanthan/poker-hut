@@ -5,7 +5,10 @@ import PokerTable from './PokerTable.jsx';
 import ActionBar from './ActionBar.jsx';
 import SidePanel from './SidePanel.jsx';
 import Icon from './Icons.jsx';
-import { THEMES, useTheme } from '../theme.js';
+import { BuyInPicker } from './BuyIn.jsx';
+import { THEMES, applyTheme } from '../theme.js';
+
+export const VARIANT_NAMES = { nlhe: "Hold'em", shortdeck: 'Short deck' };
 
 function usePortrait() {
   const q = '(max-aspect-ratio: 4/5)';
@@ -52,6 +55,11 @@ export default function TableScreen({ code, user, onLeave }) {
   useEffect(() => { if (panel === 'chat') setUnread(0); else if (chat.length) setUnread((u) => u + 1); }, [chat.length]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (panel === 'chat') setUnread(0); }, [panel]);
   useEffect(() => { if (state?.settings) setBuyAmt((v) => v || String(state.settings.defaultBuyIn)); }, [state?.settings]);
+  // the host picks the room's look for everyone
+  useEffect(() => { if (state?.settings?.theme) applyTheme(state.settings.theme); }, [state?.settings?.theme]);
+  // an error from the server un-sticks a pending action button
+  const [errorTick, setErrorTick] = useState(0);
+  useEffect(() => { if (toast) setErrorTick((n) => n + 1); }, [toast]);
 
   if (status === 'gone') {
     return (
@@ -78,8 +86,8 @@ export default function TableScreen({ code, user, onLeave }) {
   const link = `${location.origin}/t/${code}`;
 
   const hostWaiting = !!(me?.isHost && state.requests.length);
-  // keep the bar up when there's something to press or answer there
-  const pinBar = state.status !== 'running' || hostWaiting;
+  // keep the bar up while there's something to press there (requests pop up on the table)
+  const pinBar = state.status !== 'running';
 
   const copy = async () => {
     try { await navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 1600); } catch { setToast({ id: Date.now(), text: link }); }
@@ -114,7 +122,7 @@ export default function TableScreen({ code, user, onLeave }) {
           {me?.isHost && state.status === 'running' && <button className="btn sm" onClick={() => send('pause')}>Pause</button>}
           <span className="divider" />
           <button className="icon-btn" onClick={() => setMuted(sound.toggle())} aria-label={muted ? 'Turn sound on' : 'Turn sound off'} title={muted ? 'Sound off' : 'Sound on'}><Icon name={muted ? 'mute' : 'sound'} /></button>
-          <ThemePicker />
+          {me?.isHost && <ThemePicker current={state.settings.theme} onPick={(theme) => send('settings', { patch: { theme } })} />}
           {fullscreenOk && (
             <button className="icon-btn" onClick={toggleFull} aria-label={full ? 'Exit full screen' : 'Full screen'} title={full ? 'Exit full screen (F11)' : 'Full screen'}>
               <Icon name={full ? 'shrink' : 'expand'} />
@@ -135,26 +143,34 @@ export default function TableScreen({ code, user, onLeave }) {
 
       <div className="stage">
         <div className="play">
-          <PokerTable state={state} serverNow={serverNow} onSit={(seat) => send('sit', { seat })} send={send} portrait={portrait} />
+          <div className="game-badge" title={`${VARIANT_NAMES[state.settings.variant]}, blinds ${state.settings.smallBlind}/${state.settings.bigBlind}`}>
+            <strong>{VARIANT_NAMES[state.settings.variant] ?? "Hold'em"}</strong>
+            <span>{chips(state.settings.smallBlind)}/{chips(state.settings.bigBlind)}</span>
+            {state.settings.variant === 'shortdeck' && <small>{state.settings.tripsBeatStraight ? 'Flush > full house · trips > straight' : 'Flush > full house'}</small>}
+          </div>
+          <PokerTable state={state} serverNow={serverNow} onSit={(seat, buyIn) => send('sit', { seat, buyIn })} send={send} portrait={portrait} />
+          {hostWaiting && <HostRequests requests={state.requests} send={send} />}
           <footer className="dock">
             {needsChips ? (
-              <form className="buyin" onSubmit={(e) => { e.preventDefault(); send('buyin', { amount: Number(buyAmt) }); }}>
+              <>
+                <div className="dock-left"><span className="handname">Out of chips</span></div>
                 {me.pendingRequest ? (
-                  <p className="dock-note">Waiting for the host to approve your {chips(me.pendingRequest.amount)} chips…</p>
+                  <div className="dock-right"><p className="dock-note">Waiting for the host to approve {chips(me.pendingRequest.amount)} chips…</p></div>
                 ) : (
-                  <>
-                    <label htmlFor="buy">Buy in</label>
-                    <input id="buy" type="number" min="1" value={buyAmt} onChange={(e) => setBuyAmt(e.target.value)} />
-                    <span className="muted">{money(Number(buyAmt) || 0, state.settings)}</span>
-                    <button className="btn primary">{state.settings.autoApproveBuyIns || me.isHost ? 'Buy chips' : 'Ask host'}</button>
-                    <button type="button" className="btn quiet" onClick={() => send('stand')}>Stand up</button>
-                  </>
+                  <form className="popup buy-pop" onSubmit={(e) => { e.preventDefault(); send('buyin', { amount: Number(buyAmt) }); }} aria-label="Buy chips">
+                    <div className="pop-title">Buy back in</div>
+                    <BuyInPicker value={buyAmt} onChange={setBuyAmt} settings={state.settings} />
+                    <div className="pop-actions">
+                      <button type="button" className="btn quiet" onClick={() => send('stand')}>Stand up</button>
+                      <button className="btn primary" disabled={!(Number(buyAmt) > 0)}>{state.settings.autoApproveBuyIns || me.isHost ? 'Buy chips' : 'Ask host'}</button>
+                    </div>
+                  </form>
                 )}
-              </form>
+              </>
             ) : me?.seat === null ? (
-              state.status !== 'ended' && <p className="dock-note">You're watching. Pick an empty seat to play.</p>
+              state.status !== 'ended' && <p className="dock-note">You're watching. Tap an empty seat to sit down.</p>
             ) : (
-              <ActionBar state={state} send={send} />
+              <ActionBar state={state} send={send} errorTick={errorTick} />
             )}
           </footer>
         </div>
@@ -168,8 +184,7 @@ export default function TableScreen({ code, user, onLeave }) {
   );
 }
 
-function ThemePicker() {
-  const [theme, setTheme] = useTheme();
+function ThemePicker({ current, onPick }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -180,17 +195,36 @@ function ThemePicker() {
   }, [open]);
   return (
     <div className="theme-pick" ref={ref}>
-      <button className={`icon-btn ${open ? 'on' : ''}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Table theme" title="Theme"><Icon name="palette" /></button>
+      <button className={`icon-btn ${open ? 'on' : ''}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Table theme (everyone sees it)" title="Table theme"><Icon name="palette" /></button>
       {open && (
         <div className="popover" role="menu">
+          <p className="popover-note">Everyone at the table sees this theme.</p>
           {THEMES.map((t) => (
-            <button key={t.id} role="menuitemradio" aria-checked={theme === t.id} className={`theme-opt ${theme === t.id ? 'on' : ''}`} onClick={() => { setTheme(t.id); setOpen(false); }}>
+            <button key={t.id} role="menuitemradio" aria-checked={current === t.id} className={`theme-opt ${current === t.id ? 'on' : ''}`} onClick={() => { onPick(t.id); setOpen(false); }}>
               <span className={`swatch swatch-${t.id}`} aria-hidden="true"><i /><i /><i /></span>
               <span><strong>{t.name}</strong><small>{t.note}</small></span>
             </button>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// buy-in requests pop up on the table for the host, one tap to approve
+function HostRequests({ requests, send }) {
+  const [edits, setEdits] = useState({});
+  return (
+    <div className="host-asks" role="region" aria-label="Buy-in requests">
+      {requests.slice(0, 3).map((r) => (
+        <div key={r.id} className="popup ask">
+          <span className="ask-text"><strong>{r.name}</strong> wants chips</span>
+          <input type="number" min="1" value={edits[r.id] ?? r.amount} onChange={(e) => setEdits({ ...edits, [r.id]: e.target.value })} aria-label={`Chips for ${r.name}`} />
+          <button className="btn quiet sm" onClick={() => send('resolve', { id: r.id, approve: false })}>Decline</button>
+          <button className="btn primary sm" onClick={() => send('resolve', { id: r.id, approve: true, amount: Number(edits[r.id] ?? r.amount) })}>Approve</button>
+        </div>
+      ))}
+      {requests.length > 3 && <p className="ask-more">+{requests.length - 3} more in Host</p>}
     </div>
   );
 }

@@ -18,10 +18,19 @@ export const DEFAULT_SETTINGS = {
   autoDeal: true,        // false: the host presses "Deal" for every hand
   rabbitHunt: true,      // after a hand ends early, anyone may see the cards that would have come
   runItTwice: true,      // all-in before the river: offer two boards; any one "no" means once
+  variant: 'nlhe',       // 'nlhe' (52 cards) or 'shortdeck' (36 cards, sixes and up)
+  tripsBeatStraight: false, // short deck only: Triton rules rank three of a kind above a straight
+  theme: 'heirloom',     // the host picks how the room looks, for everyone
 };
 
+export const VARIANTS = ['nlhe', 'shortdeck'];
+export const THEME_IDS = ['heirloom', 'darbar', 'midnight', 'claude'];
+// hand ranking rules for a variant (see engine/evaluator.js)
+export const rulesFor = (s) => (s.variant === 'shortdeck' ? { short: true, tripsBeatStraight: !!s.tripsBeatStraight } : null);
+
 // pauses at normal pace, in ms; `pace` scales all but the vote window
-const TIMINGS = { street: 1800, runout: 2600, showdown: 7000, foldWin: 3500, nextHand: 2500, ritVote: 10000 };
+// short on purpose: the client animates chips into the pot and cards off the deck in these gaps
+const TIMINGS = { street: 1000, runout: 2000, showdown: 5000, foldWin: 2000, nextHand: 1200, ritVote: 10000 };
 export const PACES = { fast: 0.6, normal: 1, relaxed: 1.5 };
 
 export class GameError extends Error {}
@@ -54,7 +63,7 @@ export class Table {
     this.onChange = onChange ?? (() => {});
     this.onSessionEnd = onSessionEnd ?? (() => {});
     // tests can stack the deck; real games always use a fresh CSPRNG seed
-    this.shuffle = shuffle ?? (() => { const seed = newSeed(); return { seed, deck: deckFromSeed(seed) }; });
+    this.shuffle = shuffle ?? ((variant) => { const seed = newSeed(); return { seed, deck: deckFromSeed(seed, variant) }; });
     this.flowTimer = null;
     this.turnTimer = null;
     this.dealNow = false;    // host asked for the next hand (manual dealing)
@@ -103,10 +112,12 @@ export class Table {
     return !!(h && !h.over && h.ps.has(uid));
   }
 
-  sit(uid, seat) {
+  // `buyIn` (optional) asks for chips in the same step, like sitting down with cash
+  sit(uid, seat, buyIn) {
     const p = this.player(uid);
     if (this.status === 'ended') fail('This session has ended.');
     if (!Number.isInteger(seat) || seat < 0 || seat >= this.seats.length) fail('That seat does not exist.');
+    if (buyIn !== undefined && buyIn !== null && !isPosInt(buyIn)) fail('Enter a whole number of chips.');
     if (this.seats[seat] !== null) fail('That seat is taken.');
     if (p.seat !== null) {
       if (this.dealtIn(uid)) fail('Finish this hand before changing seats.');
@@ -118,6 +129,7 @@ export class Table {
     p.leaveAfterHand = false;
     this.addLog(`${p.name} sat down`);
     this.changed();
+    if (buyIn && p.stack === 0 && !this.requests.some((r) => r.uid === uid)) this.requestBuyIn(uid, buyIn);
     this.maybeStartHand();
   }
 
@@ -378,12 +390,15 @@ export class Table {
     for (let s = next(this.buttonSeat), i = 0; i < seats.length; i++, s = next(s)) order.push(s);
 
     this.dealNow = false;
-    const { seed, deck } = this.shuffle();
+    const variant = this.settings.variant;
+    const { seed, deck } = this.shuffle(variant);
     const h = {
       no: ++this.handNo,
       seed,
       commitment: commitment(seed),
       deck,
+      variant,
+      rules: rulesFor(this.settings),
       pos: 0,
       order,
       ps: new Map(),
@@ -424,7 +439,7 @@ export class Table {
     this.post(this.seats[bbSeat], this.settings.bigBlind, 'BB');
     h.currentBet = h.bigBlind;
 
-    this.history.push({ no: h.no, commitment: h.commitment, seed: h.seed, order: order.map((s) => this.seats[s]), board: [], at: this.now() });
+    this.history.push({ no: h.no, commitment: h.commitment, seed: h.seed, variant, order: order.map((s) => this.seats[s]), board: [], at: this.now() });
     if (this.history.length > 1000) this.history.shift();
 
     this.addLog(`Hand #${h.no}`);
@@ -735,8 +750,8 @@ export class Table {
     const shown = {};
     const best = boards.map(() => ({}));
     for (const s of live) {
-      boards.forEach((board, r) => { best[r][s.uid] = bestFive([...s.cards, ...board]); });
-      shown[s.uid] = { cards: s.cards, hand: describe(best[0][s.uid].score), best: best[0][s.uid].cards };
+      boards.forEach((board, r) => { best[r][s.uid] = bestFive([...s.cards, ...board], h.rules); });
+      shown[s.uid] = { cards: s.cards, hand: describe(best[0][s.uid].score, h.rules), best: best[0][s.uid].cards };
     }
     // odd chips go to the first winner left of the button (and to the first run)
     const seatRank = (uid) => { const seat = h.ps.get(uid).seat; return (seat - h.buttonSeat - 1 + this.seats.length) % this.seats.length; };
@@ -765,11 +780,11 @@ export class Table {
       const p = this.players.get(uid);
       p.stack += amount;
       const r = runs.findIndex((run) => run.won.has(uid));
-      winners.push({ uid, name: p.name, amount, hand: describe(best[r][uid].score), cards: [...new Set(runs.flatMap((run, i) => (run.won.has(uid) ? best[i][uid].cards : [])))] });
+      winners.push({ uid, name: p.name, amount, hand: describe(best[r][uid].score, h.rules), cards: [...new Set(runs.flatMap((run, i) => (run.won.has(uid) ? best[i][uid].cards : [])))] });
     }
     for (const [r, run] of runs.entries()) {
       for (const [uid, amount] of run.won) {
-        this.addLog(`${this.players.get(uid).name} wins ${amount}${runs.length === 2 ? ` on run ${r + 1}` : ''} with ${describe(best[r][uid].score)}`);
+        this.addLog(`${this.players.get(uid).name} wins ${amount}${runs.length === 2 ? ` on run ${r + 1}` : ''} with ${describe(best[r][uid].score, h.rules)}`);
       }
     }
     h.showAll = true;
@@ -777,7 +792,7 @@ export class Table {
       byFold: false, winners, pots: potResults, shown,
       runs: runs.length === 2 ? runs.map((run, r) => ({
         board: run.board,
-        winners: [...run.won].map(([uid, amount]) => ({ uid, name: this.players.get(uid).name, amount, hand: describe(best[r][uid].score), cards: best[r][uid].cards })),
+        winners: [...run.won].map(([uid, amount]) => ({ uid, name: this.players.get(uid).name, amount, hand: describe(best[r][uid].score, h.rules), cards: best[r][uid].cards })),
       })) : null,
     });
   }
@@ -849,7 +864,7 @@ export class Table {
       const states = [...h.ps.values()];
       const potTotal = states.reduce((a, s) => a + s.total - s.bet, 0);
       hand = {
-        no: h.no, street: h.street, board: h.board, buttonSeat: h.buttonSeat, sbSeat: h.sbSeat, bbSeat: h.bbSeat,
+        no: h.no, variant: h.variant, street: h.street, board: h.board, buttonSeat: h.buttonSeat, sbSeat: h.sbSeat, bbSeat: h.bbSeat,
         toAct: h.toAct, deadline: h.deadline, currentBet: h.currentBet, commitment: h.commitment,
         pot: potTotal, pots: h.over ? [] : buildPots(states.map((s) => ({ ...s, total: s.total - s.bet }))).map((p) => p.amount),
         result: h.result, over: h.over,
@@ -858,7 +873,7 @@ export class Table {
         canRabbit: !!(this.settings.rabbitHunt && h.over && !h.rabbit && !h.board2 && h.board.length < 5),
       };
     }
-    const myHandName = h && h.ps.get(uid) && !h.ps.get(uid).folded && h.board.length >= 3 ? describe(evaluate([...h.ps.get(uid).cards, ...h.board])) : null;
+    const myHandName = h && h.ps.get(uid) && !h.ps.get(uid).folded && h.board.length >= 3 ? describe(evaluate([...h.ps.get(uid).cards, ...h.board], h.rules), h.rules) : null;
     return {
       id: this.id, name: this.name, hostId: this.hostId, status: this.status, settings: this.settings,
       serverNow: this.now(),
@@ -869,14 +884,14 @@ export class Table {
       pendingOps: this.pendingOps.map((o) => ({ ...o })),
       bill: this.billSheet(),
       log: this.log.slice(-40),
-      fairness: this.history.slice(-30).map((r) => ({ no: r.no, commitment: r.commitment, board: r.board, board2: r.board2 ?? null, seed: this.status === 'ended' ? r.seed : null, order: r.order })),
+      fairness: this.history.slice(-30).map((r) => ({ no: r.no, variant: r.variant ?? 'nlhe', commitment: r.commitment, board: r.board, board2: r.board2 ?? null, seed: this.status === 'ended' ? r.seed : null, order: r.order })),
     };
   }
 
   // seeds for every hand, only once the session is over
   revealedHistory() {
     if (this.status !== 'ended') return [];
-    return this.history.map((r) => ({ no: r.no, commitment: r.commitment, seed: r.seed, order: r.order, board: r.board, board2: r.board2 ?? null, shown: r.shown ?? {} }));
+    return this.history.map((r) => ({ no: r.no, variant: r.variant ?? 'nlhe', commitment: r.commitment, seed: r.seed, order: r.order, board: r.board, board2: r.board2 ?? null, shown: r.shown ?? {} }));
   }
 
   // ---------- persistence ----------
@@ -968,5 +983,8 @@ function sanitizeSettings(s) {
     autoDeal: s.autoDeal !== false,
     rabbitHunt: s.rabbitHunt !== false,
     runItTwice: s.runItTwice !== false,
+    variant: VARIANTS.includes(s.variant) ? s.variant : 'nlhe',
+    tripsBeatStraight: !!s.tripsBeatStraight,
+    theme: THEME_IDS.includes(s.theme) ? s.theme : 'heirloom',
   };
 }

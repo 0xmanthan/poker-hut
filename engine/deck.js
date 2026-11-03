@@ -7,7 +7,8 @@
 // revealed, so any player can recompute every deck and check nothing was swapped.
 //
 // There is no weighting, no "action" logic, no memory between hands: one
-// standard 52-card deck, shuffled uniformly, dealt from the top like a real dealer.
+// standard 52-card deck (36 for short deck: sixes to aces), shuffled uniformly,
+// dealt from the top like a real dealer.
 
 import crypto from 'node:crypto';
 
@@ -50,10 +51,15 @@ function makeRng(seedHex) {
   };
 }
 
-export function deckFromSeed(seedHex) {
+// the unshuffled deck: all 52 cards, or 6♣..A♠ (ids 16..51) for short deck
+export const freshDeck = (variant) => (variant === 'shortdeck'
+  ? Array.from({ length: 36 }, (_, i) => i + 16)
+  : Array.from({ length: 52 }, (_, i) => i));
+
+export function deckFromSeed(seedHex, variant = 'nlhe') {
   const rand = makeRng(seedHex);
-  const deck = Array.from({ length: 52 }, (_, i) => i);
-  for (let i = 51; i > 0; i--) {
+  const deck = freshDeck(variant);
+  for (let i = deck.length - 1; i > 0; i--) {
     const j = rand(i + 1);
     [deck[i], deck[j]] = [deck[j], deck[i]];
   }
