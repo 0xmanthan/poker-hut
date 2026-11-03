@@ -3,6 +3,7 @@ import { session, api } from './lib.js';
 import Login from './components/Login.jsx';
 import Lobby from './components/Lobby.jsx';
 import TableScreen from './components/TableScreen.jsx';
+import { applyTheme } from './theme.js';
 
 const tableCodeFromPath = () => (location.pathname.match(/^\/t\/([A-Za-z0-9]{6})$/)?.[1] ?? null)?.toUpperCase() ?? null;
 
@@ -21,6 +22,9 @@ export default function App() {
     if (!session.token()) return;
     api('/api/me').catch((e) => { if (e.status === 401) { session.clear(); setUser(null); } });
   }, []);
+
+  // the landing page and lobby always wear Midnight; a table wears its host's theme
+  useEffect(() => { if (!code || !user) applyTheme(); }, [code, user]);
 
   const go = (next) => {
     history.pushState(null, '', next ? `/t/${next}` : '/');

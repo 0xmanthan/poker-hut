@@ -51,6 +51,11 @@ function newCode() {
   return [...bytes].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
 }
 
+// Durable Objects can't be pinned to one city; the hint asks for Asia-Pacific when a
+// table's object is first created (players are in India). Existing tables stay put.
+const LOCATION = { locationHint: 'apac' };
+const tableStub = (env, code) => env.TABLES.get(env.TABLES.idFromName(code), LOCATION);
+
 const cleanCode = (s) => String(s ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 
 export default {
@@ -84,6 +89,17 @@ export default {
         return json({ token: await issueSession(env, user), user });
       }
 
+      // where the game servers run: this edge, and probe objects created with and without the hint
+      if (path === '/api/where') {
+        const probe = async (name, opts) => {
+          const t0 = Date.now();
+          const r = await env.TABLES.get(env.TABLES.idFromName(name), opts).fetch('https://table/where');
+          return { ...(await r.json()), ms: Date.now() - t0 };
+        };
+        const [apac, nearest] = await Promise.all([probe('probe:apac', LOCATION), probe('probe:nearest')]);
+        return json({ edge: req.cf?.colo ?? null, apac, nearest });
+      }
+
       if (path === '/api/me') {
         const user = await readSession(env, bearer(req));
         return user ? json({ user }) : error('Signed out', 401);
@@ -102,7 +118,7 @@ export default {
         const body = await req.json();
         for (let attempt = 0; attempt < 5; attempt++) {
           const code = newCode();
-          const stub = env.TABLES.get(env.TABLES.idFromName(code));
+          const stub = tableStub(env, code);
           const res = await stub.fetch('https://table/init', {
             method: 'POST',
             body: JSON.stringify({ code, name: String(body.name ?? '').trim().slice(0, 40) || `${user.name}'s table`, host: user, settings: body.settings ?? {} }),
@@ -115,7 +131,7 @@ export default {
 
       const info = path.match(/^\/api\/tables\/([A-Za-z0-9]+)$/);
       if (info) {
-        const stub = env.TABLES.get(env.TABLES.idFromName(cleanCode(info[1])));
+        const stub = tableStub(env, cleanCode(info[1]));
         const res = await stub.fetch('https://table/info');
         return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json', ...CORS } });
       }
@@ -125,7 +141,7 @@ export default {
         if (req.headers.get('upgrade') !== 'websocket') return error('Expected a websocket', 426);
         const user = await readSession(env, url.searchParams.get('token'));
         if (!user) return error('Enter your name first.', 401);
-        const stub = env.TABLES.get(env.TABLES.idFromName(cleanCode(ws[1])));
+        const stub = tableStub(env, cleanCode(ws[1]));
         const headers = new Headers(req.headers);
         headers.set('x-user', JSON.stringify(user));
         return stub.fetch(new Request('https://table/ws', { headers }));
@@ -161,6 +177,11 @@ export class TableRoom extends DurableObject {
 
   async fetch(req) {
     const url = new URL(req.url);
+
+    if (url.pathname === '/where') {
+      const trace = await fetch('https://cloudflare.com/cdn-cgi/trace').then((r) => r.text()).catch(() => '');
+      return json({ colo: trace.match(/colo=(\w+)/)?.[1] ?? null });
+    }
 
     if (url.pathname === '/init') {
       if (this.table) return error('exists', 409);
