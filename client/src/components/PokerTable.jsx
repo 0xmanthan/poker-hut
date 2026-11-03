@@ -4,6 +4,7 @@ import Avatar from './Avatar.jsx';
 import Chips, { ChipStack } from './Chips.jsx';
 import { chips, sound } from '../lib.js';
 import { BuyInPicker } from './BuyIn.jsx';
+import Icon from './Icons.jsx';
 
 function useSize(ref) {
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -359,24 +360,31 @@ function SeatPopover({ at, cx, cy, seat, state, onClose, onSit }) {
   // open toward the middle of the table so it never hangs off the edge
   const below = at.y < cy;
   const side = at.x < cx - 40 ? 'right' : at.x > cx + 40 ? 'left' : 'mid';
-  const valid = hasChips || Number(amt) > 0;
+  const n = Math.floor(Number(amt)) || 0;
+  const valid = hasChips || n > 0;
+  const name = state.players.find((p) => p.uid === me.uid)?.name ?? 'you';
   return (
     <form
       ref={ref}
       className={`popup seat-pop ${below ? 'below' : 'above'} side-${side}`}
       style={{ left: at.x, top: at.y }}
-      onSubmit={(e) => { e.preventDefault(); if (valid) onSit(hasChips ? undefined : Math.floor(Number(amt))); }}
+      onSubmit={(e) => { e.preventDefault(); if (valid) onSit(hasChips ? undefined : n); }}
       aria-label={`Sit in seat ${seat + 1}`}
     >
-      <div className="pop-title">Seat {seat + 1}<span className="muted"> · as {state.players.find((p) => p.uid === me.uid)?.name ?? 'you'}</span></div>
-      {hasChips
-        ? <p className="muted small">You bring your {chips(me.stack)} chips.</p>
-        : <BuyInPicker value={amt} onChange={setAmt} settings={state.settings} autoFocus />}
-      <div className="pop-actions">
-        <button type="button" className="btn quiet" onClick={onClose}>Cancel</button>
-        <button className="btn primary" disabled={!valid}>{hasChips || approve ? 'Take the seat' : 'Sit & ask host'}</button>
+      <div className="pop-head">
+        <div>
+          <div className="pop-title">Take seat {seat + 1}</div>
+          <div className="pop-sub">Playing as {name}</div>
+        </div>
+        <button type="button" className="pop-close" onClick={onClose} aria-label="Close"><Icon name="close" size={18} /></button>
       </div>
-      {!hasChips && !approve && <p className="muted small">The host approves your chips; you're seated right away.</p>}
+      {hasChips
+        ? <p className="pop-note">You bring your {chips(me.stack)} chips.</p>
+        : <BuyInPicker value={amt} onChange={setAmt} settings={state.settings} autoFocus />}
+      <button className="btn primary wide" disabled={!valid}>
+        {hasChips ? 'Sit down' : approve ? `Sit down with ${chips(n)}` : `Sit down, ask for ${chips(n)}`}
+      </button>
+      {!hasChips && !approve && <p className="pop-foot">You sit right away; the host approves the chips.</p>}
     </form>
   );
 }

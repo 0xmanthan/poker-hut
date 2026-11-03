@@ -157,13 +157,18 @@ export default function TableScreen({ code, user, onLeave }) {
                 {me.pendingRequest ? (
                   <div className="dock-right"><p className="dock-note">Waiting for the host to approve {chips(me.pendingRequest.amount)} chips…</p></div>
                 ) : (
-                  <form className="popup buy-pop" onSubmit={(e) => { e.preventDefault(); send('buyin', { amount: Number(buyAmt) }); }} aria-label="Buy chips">
-                    <div className="pop-title">Buy back in</div>
-                    <BuyInPicker value={buyAmt} onChange={setBuyAmt} settings={state.settings} />
-                    <div className="pop-actions">
-                      <button type="button" className="btn quiet" onClick={() => send('stand')}>Stand up</button>
-                      <button className="btn primary" disabled={!(Number(buyAmt) > 0)}>{state.settings.autoApproveBuyIns || me.isHost ? 'Buy chips' : 'Ask host'}</button>
+                  <form className="popup buy-pop" onSubmit={(e) => { e.preventDefault(); send('buyin', { amount: Math.floor(Number(buyAmt)) }); }} aria-label="Buy chips">
+                    <div className="pop-head">
+                      <div>
+                        <div className="pop-title">Buy back in</div>
+                        <div className="pop-sub">You're out of chips</div>
+                      </div>
                     </div>
+                    <BuyInPicker value={buyAmt} onChange={setBuyAmt} settings={state.settings} />
+                    <button className="btn primary wide" disabled={!(Number(buyAmt) > 0)}>
+                      {state.settings.autoApproveBuyIns || me.isHost ? `Buy ${chips(Math.floor(Number(buyAmt)) || 0)} chips` : `Ask host for ${chips(Math.floor(Number(buyAmt)) || 0)}`}
+                    </button>
+                    <button type="button" className="text-btn" onClick={() => send('stand')}>Stand up instead</button>
                   </form>
                 )}
               </>

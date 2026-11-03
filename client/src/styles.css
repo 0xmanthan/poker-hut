@@ -1205,26 +1205,69 @@ input[type='number'] { width: 100%; }
 .pop-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .popover-note { color: var(--muted); font-size: 12.5px; padding: 6px 10px 4px; }
 
-.buy-pick { display: grid; gap: 8px; }
-.buy-quick { display: flex; gap: 6px; }
-.buy-quick .preset { height: auto; padding: 6px 4px; display: flex; flex-direction: column; align-items: center; line-height: 1.15; }
-.buy-quick .preset span { font-size: 11.5px; font-weight: 600; opacity: 0.75; }
+.buy-pick { display: grid; gap: 10px; }
 .buy-amount { display: flex; align-items: center; gap: 10px; }
-.buy-amount input { width: 150px; font-weight: 800; font-size: 18px; text-align: right; }
+.round-btn {
+  flex: none; width: 44px; height: 44px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--room); color: var(--text);
+  font-size: 22px; font-weight: 600; line-height: 1; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.08s;
+}
+.round-btn:hover:not(:disabled) { border-color: var(--muted); }
+.round-btn:active:not(:disabled) { transform: scale(0.94); }
+.round-btn:disabled { opacity: 0.35; cursor: default; }
+.amount-box {
+  flex: 1; min-width: 0; height: 56px; display: flex; align-items: baseline; justify-content: center; gap: 6px;
+  padding-top: 10px; border-radius: 14px; background: var(--room); border: 1px solid var(--line); cursor: text;
+}
+.amount-box:focus-within { border-color: var(--accent); }
+.amount-box input {
+  width: 100%; min-width: 0; flex: 1; text-align: right; padding: 0; border: none; background: none; outline: none;
+  font-size: 26px; font-weight: 800; letter-spacing: -0.01em;
+}
+.amount-box span { flex: 1; color: var(--muted); font-size: 14px; font-weight: 600; }
+.buy-quick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.quick-opt {
+  height: 38px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: var(--text);
+  font-weight: 700; font-size: 14px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.quick-opt small { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.quick-opt:hover { border-color: var(--muted); }
+.quick-opt.on { border-color: var(--accent); background: var(--accent-soft); }
+.quick-opt.on small { color: var(--text); }
+.buy-money { color: var(--muted); font-size: 13px; text-align: center; }
+.pop-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.pop-sub { color: var(--muted); font-size: 13px; margin-top: 1px; }
+.pop-close { width: 32px; height: 32px; margin: -6px -6px 0 0; display: grid; place-items: center; border: none; border-radius: 8px; background: none; color: var(--muted); cursor: pointer; }
+.pop-close:hover { background: var(--room-3); color: var(--text); }
+.pop-note { color: var(--muted); }
+.pop-foot { color: var(--muted); font-size: 12.5px; text-align: center; margin-top: -4px; }
+.text-btn { background: none; border: none; color: var(--muted); font-weight: 600; font-size: 13.5px; cursor: pointer; padding: 2px; justify-self: center; }
+.text-btn:hover { color: var(--text); }
+/* no browser spinner arrows on number boxes anywhere */
+input[type='number']::-webkit-outer-spin-button, input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 
 /* sit popover: anchored to the empty seat, opening toward the middle of the table */
 .seat-pop {
   --tx: -50%; --ty: calc(-100% - var(--s) * 34px);
-  position: absolute; z-index: 20; width: min(310px, calc(100vw - 24px));
+  --caret: 50%;
+  position: absolute; z-index: 20; width: min(320px, calc(100vw - 24px)); padding: 16px; gap: 14px;
   translate: var(--tx) var(--ty); /* the individual property, so the pop-in animation can't undo it */
 }
 .seat-pop.below { --ty: calc(var(--s) * 34px); }
-.seat-pop.side-right { --tx: -14%; }
-.seat-pop.side-left { --tx: -86%; }
+.seat-pop.side-right { --tx: -14%; --caret: 14%; }
+.seat-pop.side-left { --tx: -86%; --caret: 86%; }
+.seat-pop::after {
+  content: ''; position: absolute; left: var(--caret); width: 14px; height: 14px; margin-left: -7px;
+  background: var(--room-2); border: 1px solid var(--line); rotate: 45deg;
+}
+.seat-pop.above::after { bottom: -8px; border-top: none; border-left: none; }
+.seat-pop.below::after { top: -8px; border-bottom: none; border-right: none; }
 .seat-empty.picked { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
 /* out of chips: the decision sits where every other decision does (bottom right) */
-.buy-pop { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: calc(10px + env(safe-area-inset-bottom, 0px)); width: min(360px, calc(100% - 32px)); z-index: 9; }
+.buy-pop { position: absolute; right: max(16px, env(safe-area-inset-right)); bottom: calc(10px + env(safe-area-inset-bottom, 0px)); width: min(340px, calc(100% - 32px)); z-index: 9; padding: 16px; gap: 14px; }
 
 /* buy-in requests for the host, above the dock on the left */
 .host-asks { position: absolute; left: max(16px, env(safe-area-inset-left)); bottom: calc(86px + env(safe-area-inset-bottom, 0px)); z-index: 15; display: grid; gap: 8px; width: min(400px, calc(100% - 32px)); }
