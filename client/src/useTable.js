@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { session, api, wsUrl, API_BASE } from './lib.js';
+import { session, api, wsUrl, API_BASE, reloadIfStale } from './lib.js';
 
 // One live connection to a table. Reconnects on its own.
 export function useTable(code) {
@@ -21,7 +21,7 @@ export function useTable(code) {
       wsRef.current = ws;
       setStatus((s) => (s === 'open' ? 'connecting' : s));
       let opened = false;
-      ws.onopen = () => { opened = true; retry = 0; setStatus('open'); };
+      ws.onopen = () => { if (retry > 0) reloadIfStale(); opened = true; retry = 0; setStatus('open'); };
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
         if (msg.type === 'state') {
@@ -57,7 +57,10 @@ export function useTable(code) {
       else connect();
     }).catch(() => !stopped && connect());
 
-    return () => { stopped = true; clearTimeout(timer); wsRef.current?.close(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') reloadIfStale(); };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => { stopped = true; clearTimeout(timer); wsRef.current?.close(); document.removeEventListener('visibilitychange', onVisible); };
   }, [code]);
 
   const send = useCallback((type, payload = {}) => {

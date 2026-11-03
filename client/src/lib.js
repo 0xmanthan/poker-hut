@@ -35,6 +35,21 @@ export async function api(path, body) {
   return data;
 }
 
+// ---------- staying on the latest version ----------
+
+// After a deploy, a tab left open still runs the old app (old rules, old theme picker).
+// When the socket reconnects or the tab comes back into view, compare our script with
+// the one the site serves now and reload if they differ. Your seat survives a reload.
+export async function reloadIfStale() {
+  if (import.meta.env.DEV) return;
+  try {
+    const html = await fetch('/', { cache: 'no-store' }).then((r) => r.text());
+    const live = html.match(/assets\/index-[\w-]+\.js/)?.[0];
+    const mine = [...document.scripts].map((x) => x.src).find((src) => /assets\/index-/.test(src));
+    if (live && mine && !mine.endsWith(live)) location.reload();
+  } catch { /* offline: try again next time */ }
+}
+
 // ---------- cards ----------
 
 export const RANKS = '23456789TJQKA';
